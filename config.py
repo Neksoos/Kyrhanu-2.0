@@ -3,13 +3,21 @@ Configuration for Cursed Mounds backend.
 All settings via environment variables with sensible defaults.
 """
 from functools import lru_cache
-from typing import List, Optional, Annotated
+from typing import List, Optional
+import json
 
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, validator
-from pydantic_settings import BaseSettings, NoDecode
 
 
 class Settings(BaseSettings):
+    # Pydantic-Settings config (Pydantic v2 style)
+    # IMPORTANT: disable automatic JSON decoding for complex types in env
+    _cfg = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    if "enable_decoding" in getattr(SettingsConfigDict, "__annotations__", {}):
+        _cfg["enable_decoding"] = False
+    model_config = SettingsConfigDict(**_cfg)
+
     # Database
     DATABASE_URL: str = Field(
         default="postgresql+asyncpg://kurgan_user:kurgan_secret_2024@localhost:5432/cursed_mounds"
@@ -35,8 +43,7 @@ class Settings(BaseSettings):
     SUSPICIOUS_PATTERN_THRESHOLD: int = 50  # Perfect rhythm detection
 
     # WebSocket
-    # IMPORTANT: NoDecode prevents pydantic-settings from trying json.loads() on env strings.
-    WEBSOCKET_CORS_ALLOWED_ORIGINS: Annotated[List[str], NoDecode] = ["*"]
+    WEBSOCKET_CORS_ALLOWED_ORIGINS: List[str] = ["*"]
 
     # LiveOps
     EVENT_CONFIG_PATH: str = "config/events.yaml"
@@ -81,15 +88,38 @@ class Settings(BaseSettings):
 
     @validator("WEBSOCKET_CORS_ALLOWED_ORIGINS", pre=True)
     def parse_cors_origins(cls, v):
+        """
+        Accept:
+          - "*" 
+          - "https://a.com"
+          - "https://a.com,https://b.com"
+          - '["https://a.com","https://b.com"]'  (JSON list)
+        """
         if isinstance(v, str):
-            # allow "*" or comma-separated origins
-            parts = [origin.strip() for origin in v.split(",") if origin.strip()]
-            return parts if parts else ["*"]
+            s = v.strip()
+            if not s:
+                return ["*"]
+            if s.startswith("["):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed if str(x).strip()]
+                except Exception:
+                    pass
+            return [origin.strip() for origin in s.split(",") if origin.strip()]
         return v
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    @validator("DEFAULT_CURRENCY_PACKS", pre=True)
+    def parse_currency_packs(cls, v):
+        # If someone passes it from env as JSON, parse it safely
+        if isinstance(v, str):
+            s = v.strip()
+            if s.startswith("{"):
+                try:
+                    return json.loads(s)
+                except Exception:
+                    return v
+        return v
 
 
 @lru_cache()
