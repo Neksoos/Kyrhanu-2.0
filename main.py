@@ -70,8 +70,10 @@ app = FastAPI(
 )
 
 # CORS
-cors_kwargs = {
-    "allow_credentials": True,
+# We mainly use Bearer tokens (Authorization header), not cookies.
+# In production allow your frontend origin(s) via WEBSOCKET_CORS_ALLOWED_ORIGINS,
+# plus Telegram domains for embedded WebApps.
+cors_base = {
     "allow_methods": ["*"],
     "allow_headers": ["*"],
 }
@@ -80,16 +82,28 @@ if settings.ENVIRONMENT == "development":
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        **cors_kwargs,
+        allow_credentials=True,
+        **cors_base,
     )
 else:
-    # Telegram WebApp origins typically come from *.telegram.org and t.me
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[],
-        allow_origin_regex=r"^https:\/\/([a-z0-9-]+\.)*(telegram\.org|t\.me)$",
-        **cors_kwargs,
-    )
+    allowed = settings.WEBSOCKET_CORS_ALLOWED_ORIGINS
+    if "*" in allowed:
+        # Avoid invalid combination "*" + credentials.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_origin_regex=r"^https:\/\/([a-z0-9-]+\.)*(telegram\.org|t\.me)$",
+            **cors_base,
+        )
+    else:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allowed,
+            allow_credentials=True,
+            allow_origin_regex=r"^https:\/\/([a-z0-9-]+\.)*(telegram\.org|t\.me)$",
+            **cors_base,
+        )
 
 # Include routers
 
