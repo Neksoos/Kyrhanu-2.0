@@ -53,6 +53,25 @@ class Settings(BaseSettings):
     AD_REWARD_KLEYNODU: int = 5
     AD_REWARD_CHERVONTSI: int = 100
     
+    
+    @validator("DATABASE_URL", pre=True)
+    def normalize_database_url(cls, v):
+        """
+        Many hosting platforms provide DATABASE_URL like 'postgres://...' or 'postgresql://...'
+        which defaults to the synchronous psycopg2 driver. We force an async driver for SQLAlchemy asyncio.
+        """
+        if not isinstance(v, str):
+            return v
+        if v.startswith("postgres://"):
+            return "postgresql+asyncpg://" + v[len("postgres://"):]
+        if v.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + v[len("postgresql://"):]
+        if v.startswith("postgresql+psycopg2://"):
+            return "postgresql+asyncpg://" + v[len("postgresql+psycopg2://"):]
+        if v.startswith("postgresql+psycopg://"):
+            return "postgresql+asyncpg://" + v[len("postgresql+psycopg://"):]
+        return v
+
     @validator("SECRET_KEY")
     def validate_secret_key(cls, v):
         if len(v) < 32:
