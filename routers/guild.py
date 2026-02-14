@@ -3,6 +3,10 @@ Guild system router.
 Clans, wars, chat (WebSocket upgrade).
 """
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from typing import Optional
+import json
+import asyncio
+from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from sqlalchemy.sql import func
@@ -12,14 +16,14 @@ from models import User, Guild, GuildMember, GuildWar
 from services.analytics import analytics, TrackedEvent
 from routers.auth import get_current_user
 from redis_client import get_redis, publish_event
+from schemas import CreateGuildRequest, JoinGuildRequest
 
 router = APIRouter()
 
 
 @router.post("/create")
 async def create_guild(
-    name: str,
-    tag: Optional[str] = None,
+    payload: CreateGuildRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -34,6 +38,9 @@ async def create_guild(
         raise HTTPException(status_code=400, detail="Already in guild")
     
     # Validate
+    name = payload.name
+    tag = payload.tag
+
     if len(name) < 3 or len(name) > 50:
         raise HTTPException(status_code=400, detail="Name 3-50 chars")
     
@@ -73,7 +80,7 @@ async def create_guild(
 
 @router.post("/join")
 async def join_guild(
-    guild_id: int,
+    payload: JoinGuildRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -81,7 +88,7 @@ async def join_guild(
     if current_user.guild_membership:
         raise HTTPException(status_code=400, detail="Already in guild")
     
-    guild = await db.get(Guild, guild_id)
+    guild = await db.get(Guild, payload.guild_id)
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
     
@@ -89,7 +96,7 @@ async def join_guild(
         raise HTTPException(status_code=400, detail="Guild full")
     
     member = GuildMember(
-        guild_id=guild_id,
+        guild_id=payload.guild_id,
         user_id=current_user.id,
         role="member"
     )
@@ -102,11 +109,11 @@ async def join_guild(
         name="guild_join",
         user_id=current_user.id,
         session_id=None,
-        properties={"guild_id": guild_id, "created": False}
+        properties={"guild_id": payload.guild_id, "created": False}
     ))
     
     # Notify guild
-    await publish_event(f"guild:{guild_id}:join", {
+    await publish_event(f"guild:{payload.guild_id}:join", {
         "user_id": current_user.id,
         "username": current_user.username
     })
@@ -198,25 +205,37 @@ async def guild_chat(
     for msg in history:
         await websocket.send_text(msg)
     
+    async def _forward_pubsub():
+        async for msg in pubsub.listen():
+            if msg.get("type") == "message":
+                try:
+                    await websocket.send_text(msg.get("data"))
+                except Exception:
+                    return
+
+    forward_task = asyncio.create_task(_forward_pubsub())
+
     try:
         while True:
-            # Receive from client
             data = await websocket.receive_text()
-            
-            # Validate and broadcast
+
             message = {
                 "user_id": user_id,
-                "text": data[:500],  # Limit length
+                "text": data[:500],
                 "timestamp": datetime.utcnow().isoformat()
             }
             msg_json = json.dumps(message)
-            
-            # Store history
+
             await redis.lpush(f"guild:{guild_id}:history", msg_json)
             await redis.ltrim(f"guild:{guild_id}:history", 0, 99)
-            
-            # Publish
+
             await redis.publish(f"guild:{guild_id}:chat", msg_json)
-            
+
     except WebSocketDisconnect:
-        await pubsub.unsubscribe(f"guild:{guild_id}:chat")
+        pass
+    finally:
+        forward_task.cancel()
+        try:
+            await pubsub.unsubscribe(f"guild:{guild_id}:chat")
+        except Exception:
+            pass

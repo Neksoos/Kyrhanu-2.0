@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 from datetime import datetime, timedelta
+import random
+import json
 
 from database import get_db
 from models import User, LiveBoss, BossAttack
@@ -13,6 +15,7 @@ from services.analytics import analytics, TrackedEvent
 from services.live_ops import live_ops
 from routers.auth import get_current_user
 from redis_client import get_redis, publish_event, cache_get, cache_set
+from schemas import BossAttackRequest
 
 router = APIRouter()
 
@@ -72,15 +75,14 @@ async def get_active_bosses(
 
 @router.post("/attack")
 async def attack_boss(
-    boss_id: int,
-    use_kleynodu: int = 0,  # Paid attack boost
+    payload: BossAttackRequest,  # Paid attack boost
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
     Attack a live boss.
     """
-    boss = await db.get(LiveBoss, boss_id)
+    boss = await db.get(LiveBoss, payload.boss_id)
     if not boss or boss.status != "active":
         raise HTTPException(status_code=404, detail="Boss not active")
     
@@ -88,6 +90,9 @@ async def attack_boss(
         raise HTTPException(status_code=400, detail="Boss already defeated")
     
     # Check if user has energy or uses kleynodu
+    use_kleynodu = payload.use_kleynodu
+    boss_id = payload.boss_id
+
     if use_kleynodu > 0:
         if current_user.kleynodu < use_kleynodu:
             raise HTTPException(status_code=402, detail="Insufficient kleynodu")

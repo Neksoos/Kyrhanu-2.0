@@ -71,7 +71,6 @@ class LiveOpsEngine:
             "theme": "summer_solstice",
             "events": [
                 {"type": "double_drop", "name": "Ніч на Івана Купала", "duration_hours": 12},
-                {"type": "boss_rush", "name": "Половико
                 {"type": "boss_rush", "name": "Половикова Ніч", "duration_hours": 6},
             ],
             "special_drops": ["amulet_fern_flower", "skin_kupala_wreath"],
@@ -133,7 +132,12 @@ class LiveOpsEngine:
         # Check cache first
         cached = await cache_get("liveops:current_events")
         if cached:
-            return [LiveEvent(**e) for e in cached]
+            return [LiveEvent(
+                **{**e,
+                   "starts_at": datetime.fromisoformat(e["starts_at"]) if isinstance(e.get("starts_at"), str) else e.get("starts_at"),
+                   "ends_at": datetime.fromisoformat(e["ends_at"]) if isinstance(e.get("ends_at"), str) else e.get("ends_at")
+                }
+            ) for e in cached]
         
         # Get from Redis active set
         event_keys = await self.redis.smembers("liveops:active_events")
@@ -179,17 +183,18 @@ class LiveOpsEngine:
             config = event.config
             if "multiplier" in config:
                 target = config.get("applies_to", "all")
+                targets = target if isinstance(target, list) else [target]
                 mult = config["multiplier"]
                 
-                if target == "all" or target == "chervontsi":
+                if "all" in targets or "chervontsi" in targets:
                     multipliers["chervontsi"] *= mult
-                if target == "all" or target == "glory":
+                if "all" in targets or "glory" in targets:
                     multipliers["glory"] *= mult
-                if target == "drop_chance":
+                if "drop_chance" in targets:
                     multipliers["drop_chance"] *= mult
-                if target == "energy_regen":
+                if "energy_regen" in targets:
                     multipliers["energy_regen"] *= mult
-                if target == "boss_damage":
+                if "boss_damage" in targets:
                     multipliers["boss_damage"] *= mult
         
         return multipliers

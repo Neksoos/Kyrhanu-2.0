@@ -1,7 +1,7 @@
 """
 Authentication router: Telegram + Email/Password.
 """
-from fastapi import APIRouter, HTTPException, Depends, Request, Response
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -15,11 +15,14 @@ from models import User, AuthProvider
 from config import settings
 from services.telegram_auth import verify_telegram_init_data, extract_user_info
 from services.analytics import analytics, TrackedEvent
-from services.anti_cheat import hmac_manager
+from schemas import TelegramAuthRequest, RegisterRequest, LoginRequest
 
 router = APIRouter()
 security = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+from typing import Optional
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
@@ -64,8 +67,8 @@ async def get_current_user(
 
 @router.post("/telegram")
 async def auth_telegram(
+    payload: TelegramAuthRequest,
     request: Request,
-    init_data: str,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -73,7 +76,7 @@ async def auth_telegram(
     """
     # Verify Telegram data
     try:
-        parsed = verify_telegram_init_data(init_data)
+        parsed = verify_telegram_init_data(payload.init_data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Verification failed: {str(e)}")
     
@@ -139,7 +142,6 @@ async def auth_telegram(
     
     # Generate tokens
     access_token = create_access_token({"sub": str(user.id)})
-    hmac_key = await hmac_manager.get_current_key()
     
     return {
         "access_token": access_token,
@@ -152,40 +154,37 @@ async def auth_telegram(
             "chervontsi": user.chervontsi,
             "kleynodu": user.kleynodu,
             "level": user.level,
+            "experience": user.experience,
             "glory": user.glory,
             "energy": user.energy,
             "max_energy": user.max_energy,
             "referral_code": user.referral_code
-        },
-        "hmac_key": hmac_key  # For client-side action signing
+        }
     }
 
 
 @router.post("/register")
 async def register_email(
+    payload: RegisterRequest,
     request: Request,
-    username: str,
-    email: str,
-    password: str,
-    age_confirm: bool = False,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Register with email/password.
     """
-    if not age_confirm:
+    if not payload.age_confirm:
         raise HTTPException(status_code=400, detail="Age confirmation required (13+)")
     
     # Validate
-    if len(password) < 8:
+    if len(payload.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be 8+ characters")
     
     # Check existing
-    result = await db.execute(select(User).where(User.email == email))
+    result = await db.execute(select(User).where(User.email == payload.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    result = await db.execute(select(User).where(User.username == username))
+    result = await db.execute(select(User).where(User.username == payload.username))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Username taken")
     
@@ -193,14 +192,14 @@ async def register_email(
     referral_code = secrets.token_urlsafe(8)[:10]
     
     user = User(
-        username=username,
-        email=email,
-        password_hash=pwd_context.hash(password),
+        username=payload.username,
+        email=payload.email,
+        password_hash=pwd_context.hash(payload.password),
         auth_provider=AuthProvider.EMAIL,
         referral_code=referral_code,
         accepted_tos=True,
         accepted_privacy=True,
-        age_verified=age_confirm,
+        age_verified=payload.age_confirm,
         kleynodu=50
     )
     db.add(user)
@@ -217,7 +216,6 @@ async def register_email(
     
     # Auto-login
     access_token = create_access_token({"sub": str(user.id)})
-    hmac_key = await hmac_manager.get_current_key()
     
     return {
         "access_token": access_token,
@@ -225,19 +223,23 @@ async def register_email(
         "user": {
             "id": user.id,
             "username": user.username,
+            "display_name": user.display_name,
             "chervontsi": user.chervontsi,
             "kleynodu": user.kleynodu,
+            "level": user.level,
+            "experience": user.experience,
+            "glory": user.glory,
+            "energy": user.energy,
+            "max_energy": user.max_energy,
             "referral_code": user.referral_code
-        },
-        "hmac_key": hmac_key
+        }
     }
 
 
 @router.post("/login")
 async def login_email(
+    payload: LoginRequest,
     request: Request,
-    username_or_email: str,
-    password: str,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -246,7 +248,7 @@ async def login_email(
     # Find user
     result = await db.execute(
         select(User).where(
-            (User.email == username_or_email) | (User.username == username_or_email)
+            (User.email == payload.username_or_email) | (User.username == payload.username_or_email)
         )
     )
     user = result.scalar_one_or_none()
@@ -254,7 +256,7 @@ async def login_email(
     if not user or not user.password_hash:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    if not pwd_context.verify(password, user.password_hash):
+    if not pwd_context.verify(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
     # Update
@@ -270,7 +272,6 @@ async def login_email(
     ))
     
     access_token = create_access_token({"sub": str(user.id)})
-    hmac_key = await hmac_manager.get_current_key()
     
     return {
         "access_token": access_token,
@@ -282,11 +283,12 @@ async def login_email(
             "chervontsi": user.chervontsi,
             "kleynodu": user.kleynodu,
             "level": user.level,
+            "experience": user.experience,
             "glory": user.glory,
             "energy": user.energy,
+            "max_energy": user.max_energy,
             "referral_code": user.referral_code
-        },
-        "hmac_key": hmac_key
+        }
     }
 
 
@@ -310,8 +312,3 @@ async def get_me(current_user: User = Depends(get_current_user)):
     }
 
 
-@router.post("/refresh-hmac")
-async def refresh_hmac(current_user: User = Depends(get_current_user)):
-    """Get fresh HMAC key for action signing."""
-    key = await hmac_manager.get_current_key()
-    return {"hmac_key": key}

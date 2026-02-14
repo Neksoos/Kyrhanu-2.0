@@ -70,18 +70,29 @@ app = FastAPI(
 )
 
 # CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"] if settings.ENVIRONMENT == "development" else [
-        "https://*.telegram.org",
-        "https://t.me"
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+cors_kwargs = {
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+
+if settings.ENVIRONMENT == "development":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        **cors_kwargs,
+    )
+else:
+    # Telegram WebApp origins typically come from *.telegram.org and t.me
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[],
+        allow_origin_regex=r"^https:\/\/([a-z0-9-]+\.)*(telegram\.org|t\.me)$",
+        **cors_kwargs,
+    )
 
 # Include routers
+
 app.include_router(health.router, tags=["health"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(game.router, prefix="/api/game", tags=["game"])
@@ -91,7 +102,9 @@ app.include_router(boss.router, prefix="/api/boss", tags=["boss"])
 app.include_router(social.router, prefix="/api/social", tags=["social"])
 
 # Static files (for terms/privacy)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+from pathlib import Path
+if Path('static').is_dir():
+    app.mount('/static', StaticFiles(directory='static'), name='static')
 
 
 @app.get("/")

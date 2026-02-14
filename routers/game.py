@@ -21,6 +21,7 @@ from content.ethno_content import (
     HERO_NAMES, ARCHETYPES, AMULETS, MOUND_STORIES, CHOICES, get_random_phrase
 )
 from routers.auth import get_current_user
+from schemas import TapRequest, DailyChoiceRequest
 
 router = APIRouter()
 
@@ -83,11 +84,8 @@ class DailyGenerator:
 
 @router.post("/tap")
 async def tap(
+    payload: TapRequest,
     request: Request,
-    client_timestamp: int,
-    sequence_number: int,
-    hmac_signature: str,
-    nonce: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -116,10 +114,9 @@ async def tap(
     # Anti-cheat validation
     validation = await anti_cheat.validate_tap(
         user_id=current_user.id,
-        client_timestamp=client_timestamp,
-        sequence_number=sequence_number,
-        hmac_signature=hmac_signature,
-        nonce=nonce,
+        client_timestamp=payload.client_timestamp,
+        sequence_number=payload.sequence_number,
+        nonce=payload.nonce,
         current_anomaly_score=current_user.anomaly_score
     )
     
@@ -177,6 +174,7 @@ async def tap(
     current_user.experience += 1
     
     # Level up check
+    old_level = current_user.level
     new_level = current_user.level
     while current_user.experience >= current_user.level * 100:
         current_user.experience -= current_user.level * 100
@@ -203,16 +201,19 @@ async def tap(
     response = {
         "success": True,
         "chervontsi_earned": chervontsi_earned,
+        "total_chervontsi": current_user.chervontsi,
         "glory_earned": glory_earned,
+        "total_glory": current_user.glory,
         "energy_left": current_user.energy,
         "max_energy": current_user.max_energy,
-        "level_up": new_level > current_user.level - (1 if new_level == current_user.level else 0),
+        "level_up": current_user.level > old_level,
         "current_level": current_user.level,
+        "total_kleynodu": current_user.kleynodu,
         "drop": drop,
         "message": get_random_phrase("rare_drop") if drop else None,
         "multipliers_active": multipliers if any(m != 1.0 for m in multipliers.values()) else None
     }
-    
+
     if is_nerfed:
         response["warning"] = "Підозріла активність виявлена. Нагороди зменшено."
     
@@ -231,7 +232,7 @@ async def get_daily(
         select(DailyRoll).where(
             and_(
                 DailyRoll.user_id == current_user.id,
-                func.date(DailyRoll.day_date) == today
+                DailyRoll.day_date == today
             )
         )
     )
@@ -302,11 +303,12 @@ async def get_daily(
 
 @router.post("/daily/choice")
 async def make_choice(
-    choice: str,
+    payload: DailyChoiceRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """Make choice for daily roll."""
+    choice = payload.choice
     if choice not in CHOICES:
         raise HTTPException(status_code=400, detail="Invalid choice")
     
@@ -316,7 +318,7 @@ async def make_choice(
         select(DailyRoll).where(
             and_(
                 DailyRoll.user_id == current_user.id,
-                func.date(DailyRoll.day_date) == today
+                DailyRoll.day_date == today
             )
         )
     )
@@ -373,7 +375,10 @@ async def make_choice(
 
 
 @router.get("/energy")
-async def get_energy_status(current_user: User = Depends(get_current_user)):
+async def get_energy_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """Get current energy status and refill info."""
     now = datetime.utcnow()
     
@@ -390,7 +395,9 @@ async def get_energy_status(current_user: User = Depends(get_current_user)):
             current_user.energy_last_refill = now
     
     next_refill_in = 180 - int((now - current_user.energy_last_refill).total_seconds()) % 180
-    
+
+    await db.commit()
+
     return {
         "energy": current_user.energy,
         "max_energy": current_user.max_energy,

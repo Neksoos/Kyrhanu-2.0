@@ -10,13 +10,14 @@ from models import User
 from services.analytics import analytics, TrackedEvent
 from redis_client import leaderboard_get_range, leaderboard_get_rank, leaderboard_add
 from routers.auth import get_current_user
+from schemas import ReferralClaimRequest, ShareRequest
 
 router = APIRouter()
 
 
 @router.post("/referral/claim")
 async def claim_referral(
-    referral_code: str,
+    payload: ReferralClaimRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -26,7 +27,7 @@ async def claim_referral(
     
     # Find referrer
     result = await db.execute(
-        select(User).where(User.referral_code == referral_code)
+        select(User).where(User.referral_code == payload.referral_code)
     )
     referrer = result.scalar_one_or_none()
     
@@ -100,10 +101,11 @@ async def get_global_leaderboard(
 
 @router.post("/share")
 async def generate_share(
-    share_type: str,  # daily, achievement, boss, referral
+    payload: ShareRequest,  # daily, achievement, boss, referral
     current_user: User = Depends(get_current_user)
 ):
     """Generate shareable content."""
+    share_type = payload.share_type
     if share_type == "referral":
         text = f"Приєднуйся до Проклятих Курганів! Мій код: {current_user.referral_code}"
         url = f"https://t.me/CursedMoundsBot?start={current_user.referral_code}"

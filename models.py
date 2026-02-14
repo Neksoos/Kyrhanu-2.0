@@ -2,7 +2,7 @@
 SQLAlchemy models for Cursed Mounds.
 """
 from sqlalchemy import (
-    Column, Integer, String, DateTime, Boolean, ForeignKey, 
+    Column, Integer, String, DateTime, Date, Boolean, ForeignKey, 
     BigInteger, Float, JSON, Text, Index, Enum, UniqueConstraint
 )
 from sqlalchemy.sql import func
@@ -83,7 +83,7 @@ class DailyRoll(Base):
     
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    day_date = Column(DateTime(timezone=True), nullable=False, index=True)
+    day_date = Column(Date, nullable=False, index=True)
     
     # Hero data (snapshot)
     hero_name = Column(String(100), nullable=False)
