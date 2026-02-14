@@ -2,7 +2,9 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
+-- =========================
 -- Users table
+-- =========================
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(50) UNIQUE,
@@ -42,25 +44,25 @@ CREATE TABLE IF NOT EXISTS users (
     role VARCHAR(20) DEFAULT 'player'
 );
 
--- Basic indexes
 CREATE INDEX IF NOT EXISTS ix_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS ix_users_email ON users(email);
 
--- Speed index (non-unique) for provider lookups
-CREATE INDEX IF NOT EXISTS ix_users_provider ON users(auth_provider, provider_id);
-
 -- ✅ Critical: prevent duplicate players for same provider id (telegram/web)
--- Works only when provider_id is not NULL.
-CREATE UNIQUE INDEX IF NOT EXISTS ux_users_provider_notnull
+-- Works only when provider_id is not NULL. Also serves as the lookup index.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_users_provider
 ON users (auth_provider, provider_id)
 WHERE provider_id IS NOT NULL;
 
--- Helpful leaderboard / activity indexes
+-- Optional helper (fast searches by provider_id only)
+CREATE INDEX IF NOT EXISTS ix_users_provider_id ON users(provider_id);
+
 CREATE INDEX IF NOT EXISTS ix_users_glory ON users(glory DESC);
 CREATE INDEX IF NOT EXISTS ix_users_active ON users(last_active_at);
 CREATE INDEX IF NOT EXISTS ix_users_referral ON users(referral_code);
 
+-- =========================
 -- Daily rolls
+-- =========================
 CREATE TABLE IF NOT EXISTS daily_rolls (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -85,7 +87,9 @@ CREATE TABLE IF NOT EXISTS daily_rolls (
 CREATE INDEX IF NOT EXISTS ix_daily_rolls_user_date ON daily_rolls(user_id, day_date);
 CREATE INDEX IF NOT EXISTS ix_daily_rolls_date ON daily_rolls(day_date);
 
+-- =========================
 -- Guilds
+-- =========================
 CREATE TABLE IF NOT EXISTS guilds (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -104,7 +108,9 @@ CREATE TABLE IF NOT EXISTS guilds (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- =========================
 -- Guild members
+-- =========================
 CREATE TABLE IF NOT EXISTS guild_members (
     id SERIAL PRIMARY KEY,
     guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
@@ -117,7 +123,9 @@ CREATE TABLE IF NOT EXISTS guild_members (
 CREATE INDEX IF NOT EXISTS ix_guild_members_guild ON guild_members(guild_id);
 CREATE INDEX IF NOT EXISTS ix_guild_members_user ON guild_members(user_id);
 
+-- =========================
 -- Guild wars
+-- =========================
 CREATE TABLE IF NOT EXISTS guild_wars (
     id SERIAL PRIMARY KEY,
     season_id INTEGER NOT NULL,
@@ -132,7 +140,9 @@ CREATE TABLE IF NOT EXISTS guild_wars (
     battle_log JSONB DEFAULT '[]'
 );
 
+-- =========================
 -- Live bosses
+-- =========================
 CREATE TABLE IF NOT EXISTS live_bosses (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -154,7 +164,9 @@ CREATE TABLE IF NOT EXISTS live_bosses (
 CREATE INDEX IF NOT EXISTS ix_live_bosses_status ON live_bosses(status);
 CREATE INDEX IF NOT EXISTS ix_live_bosses_spawn ON live_bosses(spawn_at);
 
+-- =========================
 -- Boss attacks (high volume table)
+-- =========================
 CREATE TABLE IF NOT EXISTS boss_attacks (
     id BIGSERIAL PRIMARY KEY,
     boss_id INTEGER NOT NULL REFERENCES live_bosses(id),
@@ -170,7 +182,9 @@ CREATE INDEX IF NOT EXISTS ix_boss_attacks_user ON boss_attacks(user_id);
 CREATE INDEX IF NOT EXISTS ix_boss_attacks_boss_user ON boss_attacks(boss_id, user_id);
 CREATE INDEX IF NOT EXISTS ix_boss_attacks_created ON boss_attacks(created_at);
 
+-- =========================
 -- Inventory
+-- =========================
 CREATE TABLE IF NOT EXISTS inventory_items (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -186,7 +200,9 @@ CREATE TABLE IF NOT EXISTS inventory_items (
 CREATE INDEX IF NOT EXISTS ix_inventory_user ON inventory_items(user_id);
 CREATE INDEX IF NOT EXISTS ix_inventory_type ON inventory_items(item_type);
 
+-- =========================
 -- Shop purchases
+-- =========================
 CREATE TABLE IF NOT EXISTS shop_purchases (
     id BIGSERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -205,7 +221,9 @@ CREATE TABLE IF NOT EXISTS shop_purchases (
 CREATE INDEX IF NOT EXISTS ix_purchases_user ON shop_purchases(user_id);
 CREATE INDEX IF NOT EXISTS ix_purchases_status ON shop_purchases(status);
 
+-- =========================
 -- Seasons
+-- =========================
 CREATE TABLE IF NOT EXISTS seasons (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -217,7 +235,9 @@ CREATE TABLE IF NOT EXISTS seasons (
     is_active BOOLEAN DEFAULT TRUE
 );
 
+-- =========================
 -- Live events
+-- =========================
 CREATE TABLE IF NOT EXISTS live_events (
     id SERIAL PRIMARY KEY,
     event_type VARCHAR(50) NOT NULL,
@@ -234,7 +254,9 @@ CREATE TABLE IF NOT EXISTS live_events (
 CREATE INDEX IF NOT EXISTS ix_live_events_active ON live_events(is_active, ends_at);
 CREATE INDEX IF NOT EXISTS ix_live_events_type ON live_events(event_type);
 
+-- =========================
 -- Analytics events (partitioned by time in production)
+-- =========================
 CREATE TABLE IF NOT EXISTS analytics_events (
     id BIGSERIAL PRIMARY KEY,
     event_name VARCHAR(100) NOT NULL,
@@ -253,7 +275,9 @@ CREATE INDEX IF NOT EXISTS ix_analytics_session ON analytics_events(session_id);
 CREATE INDEX IF NOT EXISTS ix_analytics_name_time ON analytics_events(event_name, created_at);
 CREATE INDEX IF NOT EXISTS ix_analytics_ab ON analytics_events(ab_test_id, ab_test_group);
 
+-- =========================
 -- A/B test assignments
+-- =========================
 CREATE TABLE IF NOT EXISTS ab_test_assignments (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -266,3 +290,4 @@ CREATE TABLE IF NOT EXISTS ab_test_assignments (
 
 CREATE INDEX IF NOT EXISTS ix_ab_user ON ab_test_assignments(user_id);
 CREATE INDEX IF NOT EXISTS ix_ab_test ON ab_test_assignments(test_name);
+```0
