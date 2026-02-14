@@ -65,47 +65,44 @@ def verify_telegram_init_data(init_data: str) -> Optional[Dict[str, Any]]:
 
 
 def verify_telegram_login_widget(data: Dict[str, Any]) -> bool:
-    """
-    Verify Telegram Login Widget auth data.
-    https://core.telegram.org/widgets/login#checking-authorization
+    """Verify Telegram Login Widget payload (browser auth).
 
-    The widget sends a JSON object with fields like:
-      id, first_name, username, photo_url, auth_date, hash
+    Telegram docs: https://core.telegram.org/widgets/login
     """
     if not settings.TELEGRAM_BOT_TOKEN:
         raise TelegramAuthError("TELEGRAM_BOT_TOKEN not configured")
+
+    if not isinstance(data, dict):
+        return False
 
     received_hash = data.get("hash")
     if not received_hash:
         return False
 
-    # Build data-check-string from present fields (exclude hash)
-    items = []
-    for key in sorted(data.keys()):
-        if key == "hash":
+    # Data check string: key=value sorted by key, excluding hash
+    pairs = []
+    for k in sorted(data.keys()):
+        if k == "hash":
             continue
-        value = data.get(key)
-        if value is None:
+        v = data[k]
+        if v is None:
             continue
-        items.append(f"{key}={value}")
-    data_check_string = "\n".join(items)
+        pairs.append(f"{k}={v}")
+    data_check_string = "\n".join(pairs)
 
-    # Secret key for widget auth is SHA256(bot_token)
+    # secret key is sha256(bot_token)
     secret_key = hashlib.sha256(settings.TELEGRAM_BOT_TOKEN.encode()).digest()
     expected_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
 
     if not hmac.compare_digest(expected_hash, received_hash):
         return False
 
-    # Optional freshness check (24h)
-    try:
+    # Check auth_date (anti-replay)
+    auth_date = data.get("auth_date")
+    if auth_date:
         import time
-
-        auth_date = int(data.get("auth_date", 0))
-        if auth_date and (time.time() - auth_date) > 86400:
+        if time.time() - int(auth_date) > 86400:
             return False
-    except Exception:
-        return False
 
     return True
 

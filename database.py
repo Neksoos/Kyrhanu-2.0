@@ -7,10 +7,8 @@ from sqlalchemy.pool import NullPool
 from config import settings
 
 # Create async engine
-# (DATABASE_URL is normalized in config.py, but we keep a local var for clarity.)
-db_url = settings.DATABASE_URL
 engine = create_async_engine(
-    db_url,
+    settings.DATABASE_URL,
     echo=settings.DEBUG,
     future=True,
     poolclass=NullPool if settings.ENVIRONMENT == "testing" else None,

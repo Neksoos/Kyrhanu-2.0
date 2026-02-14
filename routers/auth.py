@@ -1,32 +1,111 @@
+"""Authentication router.
+
+Supports:
+- Telegram Mini App auth (WebApp initData)
+- Telegram Login Widget auth (browser)
+- Email/password auth (optional)
+
+All POST endpoints accept JSON bodies (matches the Next.js frontend).
 """
-Authentication router: Telegram + Email/Password.
-"""
-from fastapi import APIRouter, HTTPException, Depends, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from datetime import datetime, timedelta
-from jose import jwt, JWTError
-from passlib.context import CryptContext
+
+import json
 import secrets
-
-from database import get_db
-from models import User, AuthProvider
-from config import settings
-from services.telegram_auth import verify_telegram_init_data, extract_user_info, verify_telegram_login_widget
-from services.analytics import analytics, TrackedEvent
-from schemas import TelegramAuthRequest, TelegramWidgetAuthRequest, RegisterRequest, LoginRequest
-
-router = APIRouter()
-security = HTTPBearer()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
+from datetime import datetime, timedelta
 from typing import Optional
 
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import and_, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    """Create JWT access token."""
+from config import settings
+from database import get_db
+from models import AuthProvider, User
+from services.telegram_auth import (
+    TelegramAuthError,
+    verify_telegram_init_data,
+    verify_telegram_login_widget,
+)
+
+
+router = APIRouter()
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
+
+
+class EmailRegisterRequest(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    age_confirm: bool = False
+
+
+class EmailLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class TelegramInitDataRequest(BaseModel):
+    init_data: str
+
+
+class TelegramWidgetAuthRequest(BaseModel):
+    id: int
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    username: Optional[str] = None
+    photo_url: Optional[str] = None
+    auth_date: Optional[int] = None
+    hash: str
+
+
+def _hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
+
+
+def _serialize_user(u: User) -> dict:
+    return {
+        "id": u.id,
+        "username": u.username or "",
+        "display_name": u.display_name or u.username or "",
+        "avatar_url": u.avatar_url,
+        "chervontsi": u.chervontsi,
+        "kleynodu": u.kleynodu,
+        "level": u.level,
+        "experience": u.experience,
+        "glory": u.glory,
+        "energy": u.energy,
+        "max_energy": u.max_energy,
+        "referral_code": u.referral_code,
+    }
+
+
+async def _ensure_unique_username(db: AsyncSession, base: str) -> str:
+    """Return a username that's unique in DB (adds suffix if needed)."""
+    base = (base or "").strip()
+    if not base:
+        return "player"
+
+    candidate = base
+    i = 0
+    while True:
+        q = await db.execute(select(User).where(User.username == candidate))
+        exists = q.scalar_one_or_none()
+        if not exists:
+            return candidate
+        i += 1
+        candidate = f"{base}_{i}"
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
@@ -34,399 +113,195 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db)
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
 ) -> User:
-    """Dependency to get current authenticated user."""
-    token = credentials.credentials
-    
+    credentials_exception = HTTPException(status_code=401, detail="Could not validate credentials")
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
-        user_id = payload.get("sub")
+        user_id: Optional[int] = payload.get("sub")
         if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            raise credentials_exception
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    
-    # Get user from DB
-    result = await db.execute(select(User).where(User.id == int(user_id)))
-    user = result.scalar_one_or_none()
-    
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
-    
+        raise credentials_exception
+
+    user = await db.get(User, int(user_id))
+    if not user:
+        raise credentials_exception
     if user.banned_at:
-        raise HTTPException(status_code=403, detail="Account banned")
-    
-    # Update last active
-    user.last_active_at = datetime.utcnow()
-    await db.commit()
-    
+        raise HTTPException(status_code=403, detail="User is banned")
     return user
 
 
-@router.post("/telegram")
-async def auth_telegram(
-    payload: TelegramAuthRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Authenticate via Telegram WebApp initData.
-    """
-    # Verify Telegram data
-    try:
-        parsed = verify_telegram_init_data(payload.init_data)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Verification failed: {str(e)}")
-    
-    if not parsed:
-        raise HTTPException(status_code=401, detail="Invalid Telegram data")
-    
-    user_info = extract_user_info(parsed)
-    if not user_info:
-        raise HTTPException(status_code=400, detail="User info missing")
-    
-    # Check existing user
-    result = await db.execute(
-        select(User).where(
-            (User.auth_provider == AuthProvider.TELEGRAM) &
-            (User.provider_id == str(user_info['tg_id']))
-        )
-    )
-    user = result.scalar_one_or_none()
-    
-    is_new = False
-    
-    if not user:
-        # Create new user
-        referral_code = secrets.token_urlsafe(8)[:10]
-
-        tg_username = user_info.get('username')
-        if tg_username:
-            taken = await db.execute(select(User).where(User.username == tg_username))
-            if taken.scalar_one_or_none():
-                tg_username = None
-        
-        user = User(
-            username=tg_username,
-            display_name=user_info.get('first_name'),
-            auth_provider=AuthProvider.TELEGRAM,
-            provider_id=str(user_info['tg_id']),
-            avatar_url=user_info.get('photo_url'),
-            referral_code=referral_code,
-            accepted_tos=True,  # Telegram implies acceptance
-            accepted_privacy=True,
-            kleynodu=50  # Welcome bonus
-        )
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
-        is_new = True
-        
-        # Track registration
-        await analytics.track(TrackedEvent(
-            name="user_registered",
-            user_id=user.id,
-            session_id=None,
-            properties={"provider": "telegram", "is_premium": user_info.get('is_premium', False)}
-        ))
-    else:
-        # Update info
-        if user_info.get('username'):
-            new_username = user_info['username']
-            taken = await db.execute(
-                select(User).where((User.username == new_username) & (User.id != user.id))
-            )
-            if not taken.scalar_one_or_none():
-                user.username = new_username
-        if user_info.get('first_name'):
-            user.display_name = user_info['first_name']
-        if user_info.get('photo_url'):
-            user.avatar_url = user_info['photo_url']
-        
-        await analytics.track(TrackedEvent(
-            name="user_login",
-            user_id=user.id,
-            session_id=None,
-            properties={"provider": "telegram"}
-        ))
-    
-    await db.commit()
-    
-    # Generate tokens
-    access_token = create_access_token({"sub": str(user.id)})
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "is_new": is_new,
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "display_name": user.display_name,
-            "chervontsi": user.chervontsi,
-            "kleynodu": user.kleynodu,
-            "level": user.level,
-            "experience": user.experience,
-            "glory": user.glory,
-            "energy": user.energy,
-            "max_energy": user.max_energy,
-            "referral_code": user.referral_code
-        }
-    }
-
-
-@router.post("/telegram-widget")
-async def auth_telegram_widget(
-    payload: TelegramWidgetAuthRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
-    """Authenticate via Telegram Login Widget (browser)."""
-    # pydantic v2
-    data = payload.model_dump()
-
-    try:
-        ok = verify_telegram_login_widget(data)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Verification failed: {str(e)}")
-
-    if not ok:
-        raise HTTPException(status_code=401, detail="Invalid Telegram widget data")
-
-    tg_id = str(payload.id)
-
-    # Check existing TELEGRAM user
-    result = await db.execute(
-        select(User).where(
-            (User.auth_provider == AuthProvider.TELEGRAM) &
-            (User.provider_id == tg_id)
-        )
-    )
-    user = result.scalar_one_or_none()
-
-    is_new = False
-
-    if not user:
-        referral_code = secrets.token_urlsafe(8)[:10]
-
-        tg_username = payload.username
-        if tg_username:
-            taken = await db.execute(select(User).where(User.username == tg_username))
-            if taken.scalar_one_or_none():
-                tg_username = None
-        user = User(
-            username=tg_username,
-            display_name=payload.first_name,
-            auth_provider=AuthProvider.TELEGRAM,
-            provider_id=tg_id,
-            avatar_url=payload.photo_url,
-            referral_code=referral_code,
-            accepted_tos=True,
-            accepted_privacy=True,
-            kleynodu=50,
-        )
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
-        is_new = True
-
-        await analytics.track(TrackedEvent(
-            name="user_registered",
-            user_id=user.id,
-            session_id=None,
-            properties={"provider": "telegram_widget"}
-        ))
-    else:
-        # Update info
-        if payload.username:
-            new_username = payload.username
-            taken = await db.execute(
-                select(User).where((User.username == new_username) & (User.id != user.id))
-            )
-            if not taken.scalar_one_or_none():
-                user.username = new_username
-        if payload.first_name:
-            user.display_name = payload.first_name
-        if payload.photo_url:
-            user.avatar_url = payload.photo_url
-
-        await analytics.track(TrackedEvent(
-            name="user_login",
-            user_id=user.id,
-            session_id=None,
-            properties={"provider": "telegram_widget"}
-        ))
-
-        await db.commit()
-
-    access_token = create_access_token({"sub": str(user.id)})
-
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "is_new": is_new,
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "display_name": user.display_name,
-            "chervontsi": user.chervontsi,
-            "kleynodu": user.kleynodu,
-            "level": user.level,
-            "experience": user.experience,
-            "glory": user.glory,
-            "energy": user.energy,
-            "max_energy": user.max_energy,
-            "referral_code": user.referral_code,
-        },
-    }
-
-
 @router.post("/register")
-async def register_email(
-    payload: RegisterRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Register with email/password.
-    """
-    if not payload.age_confirm:
-        raise HTTPException(status_code=400, detail="Age confirmation required (13+)")
-    
-    # Validate
-    if len(payload.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be 8+ characters")
-    
+async def register_email(payload: EmailRegisterRequest, db: AsyncSession = Depends(get_db)):
     # Check existing
-    result = await db.execute(select(User).where(User.email == payload.email))
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    result = await db.execute(select(User).where(User.username == payload.username))
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Username taken")
-    
-    # Create user
-    referral_code = secrets.token_urlsafe(8)[:10]
-    
+    existing = await db.execute(
+        select(User).where(or_(User.username == payload.username, User.email == payload.email))
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Username or email already exists")
+
     user = User(
         username=payload.username,
         email=payload.email,
-        password_hash=pwd_context.hash(payload.password),
+        password_hash=_hash_password(payload.password),
         auth_provider=AuthProvider.EMAIL,
-        referral_code=referral_code,
+        provider_id=None,
+        display_name=payload.username,
+        age_verified=payload.age_confirm,
         accepted_tos=True,
         accepted_privacy=True,
-        age_verified=payload.age_confirm,
-        kleynodu=50
+        referral_code=secrets.token_urlsafe(8)[:10],
     )
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    
-    # Track
-    await analytics.track(TrackedEvent(
-        name="user_registered",
-        user_id=user.id,
-        session_id=None,
-        properties={"provider": "email"}
-    ))
-    
-    # Auto-login
-    access_token = create_access_token({"sub": str(user.id)})
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "display_name": user.display_name,
-            "chervontsi": user.chervontsi,
-            "kleynodu": user.kleynodu,
-            "level": user.level,
-            "experience": user.experience,
-            "glory": user.glory,
-            "energy": user.energy,
-            "max_energy": user.max_energy,
-            "referral_code": user.referral_code
-        }
-    }
+
+    access_token = create_access_token({"sub": user.id})
+    return {"access_token": access_token, "token_type": "bearer", "user": _serialize_user(user), "is_new": True}
 
 
 @router.post("/login")
-async def login_email(
-    payload: LoginRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Login with email or username.
-    """
-    # Find user
-    result = await db.execute(
-        select(User).where(
-            (User.email == payload.username_or_email) | (User.username == payload.username_or_email)
-        )
-    )
+async def login_email(payload: EmailLoginRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.username == payload.username))
     user = result.scalar_one_or_none()
-    
     if not user or not user.password_hash:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    if not pwd_context.verify(payload.password, user.password_hash):
+    if not _verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    # Update
-    user.last_active_at = datetime.utcnow()
-    await db.commit()
-    
-    # Track
-    await analytics.track(TrackedEvent(
-        name="user_login",
-        user_id=user.id,
-        session_id=None,
-        properties={"provider": "email"}
-    ))
-    
-    access_token = create_access_token({"sub": str(user.id)})
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "display_name": user.display_name,
-            "chervontsi": user.chervontsi,
-            "kleynodu": user.kleynodu,
-            "level": user.level,
-            "experience": user.experience,
-            "glory": user.glory,
-            "energy": user.energy,
-            "max_energy": user.max_energy,
-            "referral_code": user.referral_code
-        }
-    }
+
+    access_token = create_access_token({"sub": user.id})
+    return {"access_token": access_token, "token_type": "bearer", "user": _serialize_user(user), "is_new": False}
+
+
+@router.post("/telegram")
+async def telegram_miniapp_auth(payload: TelegramInitDataRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        parsed = verify_telegram_init_data(payload.init_data)
+    except TelegramAuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+    if not parsed or "user" not in parsed:
+        raise HTTPException(status_code=401, detail="Invalid Telegram initData")
+
+    try:
+        tg_user = json.loads(parsed["user"]) if isinstance(parsed["user"], str) else parsed["user"]
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid Telegram user payload")
+
+    tg_id = tg_user.get("id")
+    if not tg_id:
+        raise HTTPException(status_code=401, detail="Telegram user id missing")
+
+    provider_id = str(tg_id)
+    res = await db.execute(
+        select(User).where(and_(User.auth_provider == AuthProvider.TELEGRAM, User.provider_id == provider_id))
+    )
+    user = res.scalar_one_or_none()
+    is_new = False
+
+    username = tg_user.get("username")
+    display_name = " ".join(filter(None, [tg_user.get("first_name"), tg_user.get("last_name")])).strip() or username
+
+    if not user:
+        is_new = True
+        unique_username = None
+        if username:
+            unique_username = await _ensure_unique_username(db, username)
+
+        user = User(
+            username=unique_username,
+            email=None,
+            password_hash=None,
+            auth_provider=AuthProvider.TELEGRAM,
+            provider_id=provider_id,
+            display_name=display_name,
+            avatar_url=tg_user.get("photo_url"),
+            age_verified=True,
+            accepted_tos=True,
+            accepted_privacy=True,
+            referral_code=secrets.token_urlsafe(8)[:10],
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+    else:
+        # Keep profile in sync
+        changed = False
+        if not user.username and username:
+            user.username = await _ensure_unique_username(db, username)
+            changed = True
+        if display_name and user.display_name != display_name:
+            user.display_name = display_name
+            changed = True
+        if tg_user.get("photo_url") and user.avatar_url != tg_user.get("photo_url"):
+            user.avatar_url = tg_user.get("photo_url")
+            changed = True
+        if changed:
+            await db.commit()
+
+    access_token = create_access_token({"sub": user.id})
+    return {"access_token": access_token, "token_type": "bearer", "user": _serialize_user(user), "is_new": is_new}
+
+
+@router.post("/telegram-widget")
+async def telegram_widget_auth(payload: TelegramWidgetAuthRequest, db: AsyncSession = Depends(get_db)):
+    data = payload.model_dump()
+    # Verify
+    if not verify_telegram_login_widget(data):
+        raise HTTPException(status_code=401, detail="Invalid Telegram widget data")
+
+    tg_id = payload.id
+    provider_id = str(tg_id)
+    res = await db.execute(
+        select(User).where(and_(User.auth_provider == AuthProvider.TELEGRAM, User.provider_id == provider_id))
+    )
+    user = res.scalar_one_or_none()
+    is_new = False
+
+    username = payload.username
+    display_name = " ".join(filter(None, [payload.first_name, payload.last_name])).strip() or username
+
+    if not user:
+        is_new = True
+        unique_username = None
+        if username:
+            unique_username = await _ensure_unique_username(db, username)
+        user = User(
+            username=unique_username,
+            email=None,
+            password_hash=None,
+            auth_provider=AuthProvider.TELEGRAM,
+            provider_id=provider_id,
+            display_name=display_name,
+            avatar_url=payload.photo_url,
+            age_verified=True,
+            accepted_tos=True,
+            accepted_privacy=True,
+            referral_code=secrets.token_urlsafe(8)[:10],
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+    else:
+        changed = False
+        if not user.username and username:
+            user.username = await _ensure_unique_username(db, username)
+            changed = True
+        if display_name and user.display_name != display_name:
+            user.display_name = display_name
+            changed = True
+        if payload.photo_url and user.avatar_url != payload.photo_url:
+            user.avatar_url = payload.photo_url
+            changed = True
+        if changed:
+            await db.commit()
+
+    access_token = create_access_token({"sub": user.id})
+    return {"access_token": access_token, "token_type": "bearer", "user": _serialize_user(user), "is_new": is_new}
 
 
 @router.get("/me")
-async def get_me(current_user: User = Depends(get_current_user)):
-    """Get current user info."""
-    return {
-        "id": current_user.id,
-        "username": current_user.username,
-        "display_name": current_user.display_name,
-        "avatar_url": current_user.avatar_url,
-        "chervontsi": current_user.chervontsi,
-        "kleynodu": current_user.kleynodu,
-        "level": current_user.level,
-        "experience": current_user.experience,
-        "glory": current_user.glory,
-        "energy": current_user.energy,
-        "max_energy": current_user.max_energy,
-        "referral_code": current_user.referral_code,
-        "anomaly_score": current_user.anomaly_score
-    }
+async def me(current_user: User = Depends(get_current_user)):
+    return {"user": _serialize_user(current_user)}

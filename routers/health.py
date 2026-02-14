@@ -4,7 +4,6 @@ Health check endpoints.
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from datetime import datetime
 
 from database import get_db, engine
 from redis_client import get_redis

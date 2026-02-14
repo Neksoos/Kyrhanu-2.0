@@ -2,17 +2,30 @@
 Social features: referrals, sharing, leaderboards.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from database import get_db
 from models import User
 from services.analytics import analytics, TrackedEvent
-from redis_client import leaderboard_get_range, leaderboard_get_rank, leaderboard_add
+from redis_client import (
+    cache_get,
+    leaderboard_get_range,
+    leaderboard_get_rank,
+    leaderboard_add,
+)
 from routers.auth import get_current_user
-from schemas import ReferralClaimRequest, ShareRequest
 
 router = APIRouter()
+
+
+class ReferralClaimRequest(BaseModel):
+    referral_code: str
+
+
+class ShareRequest(BaseModel):
+    share_type: str
 
 
 @router.post("/referral/claim")
@@ -22,12 +35,13 @@ async def claim_referral(
     current_user: User = Depends(get_current_user)
 ):
     """Use a referral code."""
+    referral_code = payload.referral_code
     if current_user.referred_by:
         raise HTTPException(status_code=400, detail="Already used referral")
     
     # Find referrer
     result = await db.execute(
-        select(User).where(User.referral_code == payload.referral_code)
+        select(User).where(User.referral_code == referral_code)
     )
     referrer = result.scalar_one_or_none()
     
@@ -101,7 +115,7 @@ async def get_global_leaderboard(
 
 @router.post("/share")
 async def generate_share(
-    payload: ShareRequest,  # daily, achievement, boss, referral
+    payload: ShareRequest,
     current_user: User = Depends(get_current_user)
 ):
     """Generate shareable content."""

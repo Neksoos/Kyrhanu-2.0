@@ -70,43 +70,32 @@ app = FastAPI(
 )
 
 # CORS
-# We mainly use Bearer tokens (Authorization header), not cookies.
-# In production allow your frontend origin(s) via WEBSOCKET_CORS_ALLOWED_ORIGINS,
-# plus Telegram domains for embedded WebApps.
-cors_base = {
-    "allow_methods": ["*"],
-    "allow_headers": ["*"],
-}
-
 if settings.ENVIRONMENT == "development":
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        **cors_base,
-    )
+    cors_origins = ["*"]
 else:
-    allowed = settings.WEBSOCKET_CORS_ALLOWED_ORIGINS
-    if "*" in allowed:
-        # Avoid invalid combination "*" + credentials.
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=False,
-            allow_origin_regex=r"^https:\/\/([a-z0-9-]+\.)*(telegram\.org|t\.me)$",
-            **cors_base,
-        )
+    cors_origins = []
+    if settings.FRONTEND_ORIGIN:
+        cors_origins.append(settings.FRONTEND_ORIGIN)
+
+    # Allow additional origins via env (comma-separated)
+    extra = settings.WEBSOCKET_CORS_ALLOWED_ORIGINS or []
+    if "*" in extra:
+        cors_origins = ["*"]
     else:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=allowed,
-            allow_credentials=True,
-            allow_origin_regex=r"^https:\/\/([a-z0-9-]+\.)*(telegram\.org|t\.me)$",
-            **cors_base,
-        )
+        cors_origins.extend([o for o in extra if o and o not in cors_origins])
+
+# NOTE: allow_credentials can't be True when allow_origins is ["*"]
+allow_credentials = cors_origins != ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=allow_credentials,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Include routers
-
 app.include_router(health.router, tags=["health"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(game.router, prefix="/api/game", tags=["game"])
@@ -116,9 +105,7 @@ app.include_router(boss.router, prefix="/api/boss", tags=["boss"])
 app.include_router(social.router, prefix="/api/social", tags=["social"])
 
 # Static files (for terms/privacy)
-from pathlib import Path
-if Path('static').is_dir():
-    app.mount('/static', StaticFiles(directory='static'), name='static')
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.get("/")

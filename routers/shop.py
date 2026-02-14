@@ -2,10 +2,12 @@
 Shop and monetization router.
 Handles purchases, currency packs, and rewarded ads.
 """
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from datetime import datetime, timedelta
 
 from database import get_db
 from models import User, ShopPurchase, InventoryItem
@@ -13,9 +15,12 @@ from config import settings
 from services.analytics import analytics, TrackedEvent
 from services.anti_cheat import anti_cheat
 from routers.auth import get_current_user
-from schemas import BuyItemRequest, PurchasePackRequest
 
 router = APIRouter()
+
+
+class BuyItemRequest(BaseModel):
+    item_key: str
 
 
 @router.get("/catalog")
@@ -56,8 +61,9 @@ async def get_shop_catalog(
 
 @router.post("/purchase")
 async def purchase_pack(
-    payload: PurchasePackRequest,
-    request: Request,  # stripe, paypal, crypto
+    request: Request,
+    pack_key: str,
+    payment_method: str = "stripe",  # stripe, paypal, crypto
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -65,10 +71,10 @@ async def purchase_pack(
     Initiate purchase (stub for real payment integration).
     In production, this would integrate with Stripe/PayPal/TON.
     """
-    if payload.pack_key not in settings.DEFAULT_CURRENCY_PACKS:
+    if pack_key not in settings.DEFAULT_CURRENCY_PACKS:
         raise HTTPException(status_code=404, detail="Pack not found")
     
-    pack = settings.DEFAULT_CURRENCY_PACKS[payload.pack_key]
+    pack = settings.DEFAULT_CURRENCY_PACKS[pack_key]
     
     # Track purchase start
     await analytics.track(TrackedEvent(
@@ -76,22 +82,22 @@ async def purchase_pack(
         user_id=current_user.id,
         session_id=None,
         properties={
-            "pack": payload.pack_key,
+            "pack": pack_key,
             "value": pack["price_usd"],
             "currency": "USD",
-            "method": payload.payment_method
+            "method": payment_method
         }
     ))
     
     # Create pending purchase record
     purchase = ShopPurchase(
         user_id=current_user.id,
-        pack_key=payload.pack_key,
+        pack_key=pack_key,
         kleynodu_amount=pack["kleynodu"],
         price_usd=pack["price_usd"],
         currency="USD",
         status="pending",
-        payment_provider=payload.payment_method,
+        payment_provider=payment_method,
         client_ip=request.client.host if request.client else None
     )
     db.add(purchase)
@@ -113,7 +119,7 @@ async def purchase_pack(
             user_id=current_user.id,
             session_id=None,
             properties={
-                "pack": payload.pack_key,
+                "pack": pack_key,
                 "value": pack["price_usd"],
                 "kleynodu": pack["kleynodu"]
             }
@@ -144,11 +150,13 @@ async def buy_shop_item(
 ):
     """Purchase item with kleynodu."""
     from content.ethno_content import SHOP_ITEMS
+
+    item_key = payload.item_key
     
-    if payload.item_key not in SHOP_ITEMS:
+    if item_key not in SHOP_ITEMS:
         raise HTTPException(status_code=404, detail="Item not found")
     
-    item = SHOP_ITEMS[payload.item_key]
+    item = SHOP_ITEMS[item_key]
     cost = item["kleynodu_cost"]
     
     if current_user.kleynodu < cost:

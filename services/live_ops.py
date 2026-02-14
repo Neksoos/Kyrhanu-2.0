@@ -132,12 +132,7 @@ class LiveOpsEngine:
         # Check cache first
         cached = await cache_get("liveops:current_events")
         if cached:
-            return [LiveEvent(
-                **{**e,
-                   "starts_at": datetime.fromisoformat(e["starts_at"]) if isinstance(e.get("starts_at"), str) else e.get("starts_at"),
-                   "ends_at": datetime.fromisoformat(e["ends_at"]) if isinstance(e.get("ends_at"), str) else e.get("ends_at")
-                }
-            ) for e in cached]
+            return [LiveEvent(**e) for e in cached]
         
         # Get from Redis active set
         event_keys = await self.redis.smembers("liveops:active_events")
@@ -183,18 +178,17 @@ class LiveOpsEngine:
             config = event.config
             if "multiplier" in config:
                 target = config.get("applies_to", "all")
-                targets = target if isinstance(target, list) else [target]
                 mult = config["multiplier"]
                 
-                if "all" in targets or "chervontsi" in targets:
+                if target == "all" or target == "chervontsi":
                     multipliers["chervontsi"] *= mult
-                if "all" in targets or "glory" in targets:
+                if target == "all" or target == "glory":
                     multipliers["glory"] *= mult
-                if "drop_chance" in targets:
+                if target == "drop_chance":
                     multipliers["drop_chance"] *= mult
-                if "energy_regen" in targets:
+                if target == "energy_regen":
                     multipliers["energy_regen"] *= mult
-                if "boss_damage" in targets:
+                if target == "boss_damage":
                     multipliers["boss_damage"] *= mult
         
         return multipliers
