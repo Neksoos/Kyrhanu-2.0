@@ -6,18 +6,11 @@ from functools import lru_cache
 from typing import List, Optional
 import json
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings
 from pydantic import Field, validator
 
 
 class Settings(BaseSettings):
-    # Pydantic-Settings config (Pydantic v2 style)
-    # IMPORTANT: disable automatic JSON decoding for complex types in env
-    _cfg = {"env_file": ".env", "env_file_encoding": "utf-8"}
-    if "enable_decoding" in getattr(SettingsConfigDict, "__annotations__", {}):
-        _cfg["enable_decoding"] = False
-    model_config = SettingsConfigDict(**_cfg)
-
     # Database
     DATABASE_URL: str = Field(
         default="postgresql+asyncpg://kurgan_user:kurgan_secret_2024@localhost:5432/cursed_mounds"
@@ -43,7 +36,12 @@ class Settings(BaseSettings):
     SUSPICIOUS_PATTERN_THRESHOLD: int = 50  # Perfect rhythm detection
 
     # WebSocket
-    WEBSOCKET_CORS_ALLOWED_ORIGINS: List[str] = ["*"]
+    # IMPORTANT: keep as str so pydantic-settings won't json.loads() it and crash.
+    # We read env var WEBSOCKET_CORS_ALLOWED_ORIGINS into this raw string.
+    WEBSOCKET_CORS_ALLOWED_ORIGINS_RAW: str = Field(
+        default="*",
+        validation_alias="WEBSOCKET_CORS_ALLOWED_ORIGINS",
+    )
 
     # LiveOps
     EVENT_CONFIG_PATH: str = "config/events.yaml"
@@ -65,8 +63,8 @@ class Settings(BaseSettings):
     @validator("DATABASE_URL", pre=True)
     def normalize_database_url(cls, v):
         """
-        Many hosting platforms provide DATABASE_URL like 'postgres://...' or 'postgresql://...'
-        which defaults to the synchronous psycopg2 driver. We force an async driver for SQLAlchemy asyncio.
+        Hosting platforms may provide DATABASE_URL like 'postgres://...' or 'postgresql://...'
+        which defaults to synchronous psycopg2. Force asyncpg for SQLAlchemy asyncio.
         """
         if not isinstance(v, str):
             return v
@@ -86,40 +84,35 @@ class Settings(BaseSettings):
             raise ValueError("SECRET_KEY must be at least 32 characters")
         return v
 
-    @validator("WEBSOCKET_CORS_ALLOWED_ORIGINS", pre=True)
-    def parse_cors_origins(cls, v):
+    @property
+    def WEBSOCKET_CORS_ALLOWED_ORIGINS(self) -> List[str]:
         """
-        Accept:
+        Accept env formats:
           - "*" 
           - "https://a.com"
           - "https://a.com,https://b.com"
-          - '["https://a.com","https://b.com"]'  (JSON list)
+          - '["https://a.com","https://b.com"]' (JSON list)
+          - "" (empty) -> ["*"]
         """
-        if isinstance(v, str):
-            s = v.strip()
-            if not s:
-                return ["*"]
-            if s.startswith("["):
-                try:
-                    parsed = json.loads(s)
-                    if isinstance(parsed, list):
-                        return [str(x).strip() for x in parsed if str(x).strip()]
-                except Exception:
-                    pass
-            return [origin.strip() for origin in s.split(",") if origin.strip()]
-        return v
+        s = (self.WEBSOCKET_CORS_ALLOWED_ORIGINS_RAW or "").strip()
+        if not s:
+            return ["*"]
+        if s == "*":
+            return ["*"]
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    out = [str(x).strip() for x in parsed if str(x).strip()]
+                    return out if out else ["*"]
+            except Exception:
+                pass
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        return parts if parts else ["*"]
 
-    @validator("DEFAULT_CURRENCY_PACKS", pre=True)
-    def parse_currency_packs(cls, v):
-        # If someone passes it from env as JSON, parse it safely
-        if isinstance(v, str):
-            s = v.strip()
-            if s.startswith("{"):
-                try:
-                    return json.loads(s)
-                except Exception:
-                    return v
-        return v
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
 
 
 @lru_cache()
