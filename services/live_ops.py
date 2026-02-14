@@ -20,45 +20,48 @@ class LiveEvent:
     event_type: str
     name: str
     description: str
-    starts_at: datetime
-    ends_at: datetime
+    start_time: datetime
+    end_time: datetime
     config: Dict[str, Any]
     is_active: bool = True
     
-    def to_dict(self) -> dict:
-        return {
-            **asdict(self),
-            'starts_at': self.starts_at.isoformat(),
-            'ends_at': self.ends_at.isoformat()
-        }
+    def to_dict(self):
+        data = asdict(self)
+        data['start_time'] = self.start_time.isoformat()
+        data['end_time'] = self.end_time.isoformat()
+        return data
 
 
 class LiveOpsEngine:
     """
-    Central engine for all live operations.
-    - Weekly cycle management
+    Main LiveOps engine. Handles:
     - Event scheduling and activation
-    - Season progression
-    - Dynamic content injection
+    - Weekly cycles
+    - Seasonal content
+    - Dynamic configuration updates
     """
     
-    WEEKLY_CYCLE = {
-        0: {  # Monday
-            "event_type": "guild_war_start",
-            "name": "Початок Війни Громад",
+    # Default events configuration
+    DEFAULT_WEEKLY_EVENTS = {
+        "monday": {
+            "event_type": "double_xp",
+            "name": "Понеділок — Подвійний Досвід",
+            "duration_hours": 24,
             "weight": 1.0
         },
-        2: {  # Wednesday
-            "event_type": "mid_week_boost",
-            "name": "Середа — День Сили",
+        "wednesday": {
+            "event_type": "resource_rush",
+            "name": "Середа — Шалені Знахідки",
+            "duration_hours": 24,
             "weight": 1.0
         },
-        4: {  # Friday
-            "event_type": "new_banner",
-            "name": "П'ятничний Баннер",
+        "friday": {
+            "event_type": "boss_spawn",
+            "name": "П’ятниця — Прокляті Боси",
+            "duration_hours": 24,
             "weight": 1.0
         },
-        6: {  # Sunday
+        "sunday": {
             "event_type": "leaderboard_reset",
             "name": "Неділя — Підсумки Тижня",
             "weight": 1.0
@@ -83,11 +86,11 @@ class LiveOpsEngine:
                 {"type": "resource_rush", "name": "Жнива", "duration_hours": 24},
                 {"type": "guild_competition", "name": "Змагання Громад", "duration_hours": 48},
             ],
-            "special_drops": ["amulet_golden_sheaf", "skin_reaper"],
+            "special_drops": ["amulet_wheat_spirit", "skin_harvester"],
             "bp_theme": "harvest"
         },
         "winter": {
-            "name": "Маланка",
+            "name": "Зимове Сонцестояння",
             "theme": "winter_solstice",
             "events": [
                 {"type": "winter_boss", "name": "Морозко", "duration_hours": 12},
@@ -99,8 +102,17 @@ class LiveOpsEngine:
     }
     
     def __init__(self):
-        self.redis = get_redis()
+        # NOTE: Redis is initialized asynchronously in app startup.
+        # Do NOT call get_redis() at import time.
+        self._redis = None
         self._load_config()
+
+    @property
+    def redis(self):
+        """Lazy Redis client (available after init_redis())."""
+        if self._redis is None:
+            self._redis = get_redis()
+        return self._redis
     
     def _load_config(self):
         """Load event configuration from YAML or use defaults."""
@@ -111,87 +123,43 @@ class LiveOpsEngine:
         else:
             self.config = self._default_config()
     
-    def _default_config(self) -> dict:
-        """Default LiveOps configuration."""
+    def _default_config(self) -> Dict[str, Any]:
+        """Default configuration if no YAML file."""
         return {
-            "weekly_cycle": self.WEEKLY_CYCLE,
+            "weekly_events": self.DEFAULT_WEEKLY_EVENTS,
+            "special_events": [],
             "seasonal_templates": self.SEASONAL_TEMPLATES,
             "event_weights": {
-                "double_drop": 0.3,
-                "boss_rush": 0.2,
-                "lucky_hour": 0.25,
-                "guild_war": 0.15,
-                "special": 0.1
+                "double_xp": 1.0,
+                "resource_rush": 1.0,
+                "boss_spawn": 1.0,
+                "double_drop": 0.5,
+                "guild_competition": 0.3
             }
         }
     
-    async def get_current_events(self) -> List[LiveEvent]:
-        """Get all currently active events."""
-        now = datetime.utcnow()
+    async def get_active_events(self) -> List[LiveEvent]:
+        """Get currently active events."""
+        events_data = await cache_get("liveops:active_events")
+        if not events_data:
+            return []
         
-        # Check cache first
-        cached = await cache_get("liveops:current_events")
-        if cached:
-            return [LiveEvent(**e) for e in cached]
-        
-        # Get from Redis active set
-        event_keys = await self.redis.smembers("liveops:active_events")
         events = []
+        for event_dict in events_data:
+            # Convert datetime strings back
+            event_dict['start_time'] = datetime.fromisoformat(event_dict['start_time'])
+            event_dict['end_time'] = datetime.fromisoformat(event_dict['end_time'])
+            events.append(LiveEvent(**event_dict))
         
-        for key in event_keys:
-            event_data = await self.redis.hgetall(key)
-            if event_data:
-                event = LiveEvent(
-                    id=event_data.get('id', key.split(':')[-1]),
-                    event_type=event_data['event_type'],
-                    name=event_data['name'],
-                    description=event_data.get('description', ''),
-                    starts_at=datetime.fromisoformat(event_data['starts_at']),
-                    ends_at=datetime.fromisoformat(event_data['ends_at']),
-                    config=json.loads(event_data.get('config', '{}')),
-                    is_active=event_data.get('is_active', 'true') == 'true'
-                )
-                
-                # Auto-expire if past end time
-                if now > event.ends_at:
-                    await self._deactivate_event(key)
-                    continue
-                    
-                events.append(event)
+        # Filter expired
+        now = datetime.utcnow()
+        active_events = [e for e in events if e.end_time > now and e.is_active]
         
-        # Cache for 60 seconds
-        await cache_set("liveops:current_events", [e.to_dict() for e in events], expire=60)
-        return events
-    
-    async def get_active_multipliers(self) -> Dict[str, float]:
-        """Get current multipliers from active events."""
-        events = await self.get_current_events()
-        multipliers = {
-            "chervontsi": 1.0,
-            "glory": 1.0,
-            "drop_chance": 1.0,
-            "energy_regen": 1.0,
-            "boss_damage": 1.0
-        }
+        # Update cache if needed
+        if len(active_events) != len(events):
+            await cache_set("liveops:active_events", [e.to_dict() for e in active_events])
         
-        for event in events:
-            config = event.config
-            if "multiplier" in config:
-                target = config.get("applies_to", "all")
-                mult = config["multiplier"]
-                
-                if target == "all" or target == "chervontsi":
-                    multipliers["chervontsi"] *= mult
-                if target == "all" or target == "glory":
-                    multipliers["glory"] *= mult
-                if target == "drop_chance":
-                    multipliers["drop_chance"] *= mult
-                if target == "energy_regen":
-                    multipliers["energy_regen"] *= mult
-                if target == "boss_damage":
-                    multipliers["boss_damage"] *= mult
-        
-        return multipliers
+        return active_events
     
     async def schedule_event(
         self,
@@ -199,240 +167,188 @@ class LiveOpsEngine:
         name: str,
         description: str,
         duration_hours: int,
-        config: Dict[str, Any],
-        start_at: Optional[datetime] = None
+        config: Optional[Dict[str, Any]] = None,
+        start_time: Optional[datetime] = None
     ) -> LiveEvent:
-        """Schedule a new event."""
-        if start_at is None:
-            start_at = datetime.utcnow()
-        
-        ends_at = start_at + timedelta(hours=duration_hours)
-        event_id = f"evt_{start_at.strftime('%Y%m%d%H%M%S')}_{random.randint(1000, 9999)}"
+        """Schedule a new live event."""
+        start = start_time or datetime.utcnow()
+        end = start + timedelta(hours=duration_hours)
         
         event = LiveEvent(
-            id=event_id,
+            id=f"{event_type}_{int(start.timestamp())}",
             event_type=event_type,
             name=name,
             description=description,
-            starts_at=start_at,
-            ends_at=ends_at,
-            config=config
+            start_time=start,
+            end_time=end,
+            config=config or {}
         )
         
-        # Store in Redis
-        key = f"liveops:event:{event_id}"
-        await self.redis.hset(key, mapping={
-            'id': event_id,
-            'event_type': event_type,
-            'name': name,
-            'description': description,
-            'starts_at': start_at.isoformat(),
-            'ends_at': ends_at.isoformat(),
-            'config': json.dumps(config),
-            'is_active': 'true'
-        })
+        # Add to active events
+        active = await self.get_active_events()
+        active.append(event)
         
-        await self.redis.sadd("liveops:active_events", key)
-        await self.redis.expireat(key, int(ends_at.timestamp()) + 3600)  # Cleanup 1h after
+        await cache_set("liveops:active_events", [e.to_dict() for e in active])
         
-        # Publish notification
-        await publish_event("liveops:new_event", {
-            "event": event.to_dict(),
-            "message": f"Нова подія: {name}!"
-        })
-        
-        # Invalidate cache
-        await cache_delete("liveops:current_events")
+        # Publish event started
+        await publish_event("live_event_started", event.to_dict())
         
         return event
     
-    async def _deactivate_event(self, key: str):
-        """Deactivate expired event."""
-        await self.redis.hset(key, "is_active", "false")
-        await self.redis.srem("liveops:active_events", key)
+    async def end_event(self, event_id: str) -> bool:
+        """Manually end an event."""
+        active = await self.get_active_events()
+        
+        # Find and deactivate
+        for event in active:
+            if event.id == event_id:
+                event.is_active = False
+                event.end_time = datetime.utcnow()
+                
+                await cache_set("liveops:active_events", [e.to_dict() for e in active])
+                await publish_event("live_event_ended", {"event_id": event_id})
+                return True
+        
+        return False
     
     async def process_weekly_cycle(self):
-        """Process weekly scheduled events."""
+        """
+        Process weekly cycle:
+        - Schedule daily/weekly events
+        - Reset leaderboards on Sunday
+        - Process seasonal transitions
+        """
         now = datetime.utcnow()
-        weekday = now.weekday()
+        day_name = now.strftime("%A").lower()
         
         # Check if already processed today
-        last_run = await self.redis.get("liveops:last_weekly_run")
-        today_str = now.strftime("%Y-%m-%d")
+        last_processed = await cache_get("liveops:last_processed_date")
+        today = now.date().isoformat()
         
-        if last_run == today_str:
-            return  # Already ran today
-        
-        cycle_config = self.WEEKLY_CYCLE.get(weekday)
-        if not cycle_config:
+        if last_processed == today:
             return
         
-        # Schedule appropriate event
-        if weekday == 0:  # Monday - Guild War
-            await self.schedule_event(
-                "guild_war",
-                "Війна Громад",
-                "Твоя громада проти ворожої! Бийся за славу і території!",
-                48,  # 2 days
-                {"war_points_multiplier": 2, "territory_control": True}
-            )
-        
-        elif weekday == 2:  # Wednesday - Mid-week boost
-            boost_type = random.choice(["double_drop", "lucky_hour", "energy_rush"])
-            if boost_type == "double_drop":
+        # Schedule daily event if configured
+        weekly_events = self.config.get("weekly_events", {})
+        if day_name in weekly_events:
+            event_config = weekly_events[day_name]
+            
+            if event_config["event_type"] == "leaderboard_reset":
+                await self._process_leaderboard_reset()
+            else:
                 await self.schedule_event(
-                    "double_drop",
-                    "Середа Сили",
-                    "Подвійні нагороди з курганів!",
-                    12,
-                    {"multiplier": 2, "applies_to": "all"}
-                )
-            elif boost_type == "lucky_hour":
-                await self.schedule_event(
-                    "lucky_hour",
-                    "Щаслива Година",
-                    "Шанс на легендарний дроп збільшено втричі!",
-                    1,
-                    {"legendary_chance_multiplier": 3}
+                    event_type=event_config["event_type"],
+                    name=event_config["name"],
+                    description=event_config.get("description", ""),
+                    duration_hours=event_config.get("duration_hours", 24),
+                    config=event_config.get("config", {})
                 )
         
-        elif weekday == 4:  # Friday - New banner/content
-            await self.schedule_event(
-                "special",
-                "П'ятничний Баннер",
-                "Нові унікальні предмети доступні обмежений час!",
-                72,  # Weekend long
-                {"special_shop_rotation": True, "exclusive_items": 3}
-            )
+        # Process seasonal
+        await self._process_seasonal_content()
         
-        elif weekday == 6:  # Sunday - Leaderboard reset
-            await self._process_leaderboard_reset()
-            await self.schedule_event(
-                "leaderboard_reset",
-                "Підсумки Тижня",
-                "Нагороди за лідерство! Новий сезон починається!",
-                2,
-                {"celebration_mode": True}
-            )
-        
-        await self.redis.set("liveops:last_weekly_run", today_str)
+        # Mark processed
+        await cache_set("liveops:last_processed_date", today)
     
     async def _process_leaderboard_reset(self):
-        """Process weekly leaderboard rewards."""
-        # Get top 100 from Redis
-        top_players = await self.redis.zrevrange(
-            "leaderboard:weekly", 0, 99, withscores=True
-        )
+        """Reset leaderboards and distribute rewards."""
+        # Publish leaderboard reset event
+        await publish_event("leaderboard_reset", {
+            "timestamp": datetime.utcnow().isoformat(),
+            "type": "weekly"
+        })
         
-        rewards = []
-        for rank, (player_id, score) in enumerate(top_players):
-            kleynodu = 0
-            chervontsi = 0
+        # Could implement reward distribution here
+        # For now, just reset signal
+    
+    async def _process_seasonal_content(self):
+        """Check and activate seasonal events."""
+        now = datetime.utcnow()
+        month = now.month
+        
+        # Simple seasonal mapping
+        season_map = {
+            6: "kupala",    # June
+            9: "harvest",   # September
+            12: "winter"    # December
+        }
+        
+        if month in season_map:
+            template_key = season_map[month]
             
-            if rank == 0:
-                kleynodu, chervontsi = 500, 50000
-            elif rank < 3:
-                kleynodu, chervontsi = 300, 30000
-            elif rank < 10:
-                kleynodu, chervontsi = 150, 15000
-            elif rank < 50:
-                kleynodu, chervontsi = 50, 5000
-            else:
-                kleynodu, chervontsi = 25, 2500
+            # Check if seasonal already active this month
+            seasonal_key = f"liveops:seasonal:{template_key}:{now.year}"
+            already_active = await cache_get(seasonal_key)
             
-            rewards.append({
-                "user_id": player_id,
-                "rank": rank + 1,
-                "kleynodu": kleynodu,
-                "chervontsi": chervontsi
-            })
+            if not already_active:
+                await self._activate_seasonal_template(template_key)
+                await cache_set(seasonal_key, True)
+    
+    async def _activate_seasonal_template(self, template_key: str):
+        """Activate a seasonal template and schedule its events."""
+        template = self.config.get("seasonal_templates", {}).get(template_key)
+        if not template:
+            return
         
-        # Store rewards for distribution
-        await self.redis.setex(
-            "leaderboard:weekly_rewards",
-            604800,  # 7 days
-            json.dumps(rewards)
-        )
+        # Schedule template events
+        for event_config in template.get("events", []):
+            await self.schedule_event(
+                event_type=event_config["type"],
+                name=event_config["name"],
+                description=f"Seasonal event: {template['name']}",
+                duration_hours=event_config["duration_hours"],
+                config={
+                    "seasonal_template": template_key,
+                    "special_drops": template.get("special_drops", []),
+                    "theme": template.get("theme")
+                }
+            )
         
-        # Reset weekly leaderboard
-        await self.redis.delete("leaderboard:weekly")
-        
-        # Publish
-        await publish_event("liveops:leaderboard_reset", {
-            "top_10": rewards[:10],
-            "total_rewards": len(rewards)
+        # Publish seasonal start
+        await publish_event("seasonal_activated", {
+            "template": template_key,
+            "name": template["name"],
+            "special_drops": template.get("special_drops", [])
         })
     
-    async def start_season(self, season_key: str) -> Dict[str, Any]:
-        """Start a new seasonal event."""
-        template = self.SEASONAL_TEMPLATES.get(season_key)
-        if not template:
-            raise ValueError(f"Unknown season: {season_key}")
+    async def get_dynamic_config(self) -> Dict[str, Any]:
+        """Get current dynamic configuration for client."""
+        active_events = await self.get_active_events()
         
+        # Build config based on active events
+        dynamic = {
+            "active_events": [e.to_dict() for e in active_events],
+            "modifiers": {},
+            "special_drops": []
+        }
+        
+        # Apply event modifiers
+        for event in active_events:
+            if event.event_type == "double_xp":
+                dynamic["modifiers"]["xp_multiplier"] = 2.0
+            elif event.event_type == "resource_rush":
+                dynamic["modifiers"]["drop_multiplier"] = 1.5
+            elif event.event_type == "double_drop":
+                dynamic["modifiers"]["rare_drop_chance"] = 2.0
+            
+            # Collect special drops
+            if "special_drops" in event.config:
+                dynamic["special_drops"].extend(event.config["special_drops"])
+        
+        return dynamic
+    
+    async def force_refresh_config(self):
+        """Reload config from file and update."""
+        self._load_config()
+        await publish_event("liveops_config_updated", {
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    
+    async def get_next_weekly_reset(self) -> str:
+        """Get timestamp of next weekly reset (Sunday midnight UTC)."""
         now = datetime.utcnow()
         
-        # Schedule season events
-        scheduled = []
-        for evt in template["events"]:
-            event = await self.schedule_event(
-                evt["type"],
-                evt["name"],
-                f"Сезонна подія: {evt['name']}",
-                evt["duration_hours"],
-                {"season": season_key, "special": True}
-            )
-            scheduled.append(event.to_dict())
-        
-        # Set active season
-        season_data = {
-            "key": season_key,
-            "name": template["name"],
-            "theme": template["theme"],
-            "started_at": now.isoformat(),
-            "ends_at": (now + timedelta(days=90)).isoformat(),
-            "special_drops": template["special_drops"],
-            "bp_theme": template["bp_theme"]
-        }
-        
-        await self.redis.setex(
-            "liveops:current_season",
-            7776000,  # 90 days
-            json.dumps(season_data)
-        )
-        
-        return {
-            "season": season_data,
-            "events_scheduled": scheduled
-        }
-    
-    async def get_current_season(self) -> Optional[Dict[str, Any]]:
-        """Get currently active season."""
-        data = await self.redis.get("liveops:current_season")
-        if data:
-            return json.loads(data)
-        return None
-    
-    async def get_player_event_status(self, user_id: int) -> Dict[str, Any]:
-        """Get personalized event status for player."""
-        events = await self.get_current_events()
-        season = await self.get_current_season()
-        multipliers = await self.get_active_multipliers()
-        
-        # Check for unclaimed rewards
-        unclaimed = await self.redis.get(f"rewards:pending:{user_id}")
-        
-        return {
-            "active_events": [e.to_dict() for e in events],
-            "current_season": season,
-            "multipliers": multipliers,
-            "unclaimed_rewards": json.loads(unclaimed) if unclaimed else [],
-            "next_reset": self._get_next_reset_time()
-        }
-    
-    def _get_next_reset_time(self) -> str:
-        """Get next scheduled reset time."""
-        now = datetime.utcnow()
-        # Next Sunday midnight UTC
+        # Calculate next Sunday midnight UTC
         days_until_sunday = (6 - now.weekday()) % 7
         if days_until_sunday == 0 and now.hour >= 0:
             days_until_sunday = 7
