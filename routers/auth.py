@@ -1,23 +1,27 @@
 """Authentication router.
 
-Supports:
-- Telegram Mini App auth (WebApp initData)
-- Telegram Login Widget auth (browser)
-- Email/password auth (optional)
-
-All POST endpoints accept JSON bodies (matches the Next.js frontend).
+This module implements the REST endpoints for user authentication.
+It supports Telegram-based flows as well as email/password sign‑ups and
+logins. The original implementation relied on Pydantic's ``EmailStr``
+type for email validation, which requires an optional dependency
+(``email-validator``). Since that dependency isn't available in the
+execution environment, we've replaced ``EmailStr`` with a plain
+``str`` and added a custom validator using a simple regular
+expression. This prevents runtime ``ImportError`` exceptions while
+retaining basic validation.
 """
 
 import json
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, validator
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,10 +42,24 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
 
 
 class EmailRegisterRequest(BaseModel):
+    """Request payload for registering with email and password.
+
+    The email field is validated against a minimal regex to avoid
+    relying on the optional ``email-validator`` package. See
+    ``schemas.py`` for details.
+    """
+
     username: str
-    email: EmailStr
+    email: str
     password: str
     age_confirm: bool = False
+
+    @validator("email")
+    def validate_email(cls, value: str) -> str:
+        pattern = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+        if not pattern.match(value):
+            raise ValueError("Invalid email address")
+        return value
 
 
 class EmailLoginRequest(BaseModel):
