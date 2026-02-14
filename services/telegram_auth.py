@@ -64,6 +64,52 @@ def verify_telegram_init_data(init_data: str) -> Optional[Dict[str, Any]]:
     return parsed
 
 
+def verify_telegram_login_widget(data: Dict[str, Any]) -> bool:
+    """
+    Verify Telegram Login Widget auth data.
+    https://core.telegram.org/widgets/login#checking-authorization
+
+    The widget sends a JSON object with fields like:
+      id, first_name, username, photo_url, auth_date, hash
+    """
+    if not settings.TELEGRAM_BOT_TOKEN:
+        raise TelegramAuthError("TELEGRAM_BOT_TOKEN not configured")
+
+    received_hash = data.get("hash")
+    if not received_hash:
+        return False
+
+    # Build data-check-string from present fields (exclude hash)
+    items = []
+    for key in sorted(data.keys()):
+        if key == "hash":
+            continue
+        value = data.get(key)
+        if value is None:
+            continue
+        items.append(f"{key}={value}")
+    data_check_string = "\n".join(items)
+
+    # Secret key for widget auth is SHA256(bot_token)
+    secret_key = hashlib.sha256(settings.TELEGRAM_BOT_TOKEN.encode()).digest()
+    expected_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+    if not hmac.compare_digest(expected_hash, received_hash):
+        return False
+
+    # Optional freshness check (24h)
+    try:
+        import time
+
+        auth_date = int(data.get("auth_date", 0))
+        if auth_date and (time.time() - auth_date) > 86400:
+            return False
+    except Exception:
+        return False
+
+    return True
+
+
 def _parse_init_data(init_data: str) -> Dict[str, Any]:
     """Parse URL-encoded init data string."""
     try:
