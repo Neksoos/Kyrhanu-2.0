@@ -13,9 +13,9 @@ import secrets
 from database import get_db
 from models import User, AuthProvider
 from config import settings
-from services.telegram_auth import verify_telegram_init_data, extract_user_info
+from services.telegram_auth import verify_telegram_init_data, extract_user_info, verify_telegram_login_widget
 from services.analytics import analytics, TrackedEvent
-from schemas import TelegramAuthRequest, RegisterRequest, LoginRequest
+from schemas import TelegramAuthRequest, TelegramWidgetAuthRequest, RegisterRequest, LoginRequest
 
 router = APIRouter()
 security = HTTPBearer()
@@ -89,7 +89,10 @@ async def auth_telegram(
     
     # Check existing user
     result = await db.execute(
-        select(User).where(User.provider_id == str(user_info['tg_id']))
+        select(User).where(
+            (User.auth_provider == AuthProvider.TELEGRAM) &
+            (User.provider_id == str(user_info['tg_id']))
+        )
     )
     user = result.scalar_one_or_none()
     
@@ -98,9 +101,15 @@ async def auth_telegram(
     if not user:
         # Create new user
         referral_code = secrets.token_urlsafe(8)[:10]
+
+        tg_username = user_info.get('username')
+        if tg_username:
+            taken = await db.execute(select(User).where(User.username == tg_username))
+            if taken.scalar_one_or_none():
+                tg_username = None
         
         user = User(
-            username=user_info.get('username'),
+            username=tg_username,
             display_name=user_info.get('first_name'),
             auth_provider=AuthProvider.TELEGRAM,
             provider_id=str(user_info['tg_id']),
@@ -125,7 +134,12 @@ async def auth_telegram(
     else:
         # Update info
         if user_info.get('username'):
-            user.username = user_info['username']
+            new_username = user_info['username']
+            taken = await db.execute(
+                select(User).where((User.username == new_username) & (User.id != user.id))
+            )
+            if not taken.scalar_one_or_none():
+                user.username = new_username
         if user_info.get('first_name'):
             user.display_name = user_info['first_name']
         if user_info.get('photo_url'):
@@ -160,6 +174,112 @@ async def auth_telegram(
             "max_energy": user.max_energy,
             "referral_code": user.referral_code
         }
+    }
+
+
+@router.post("/telegram-widget")
+async def auth_telegram_widget(
+    payload: TelegramWidgetAuthRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Authenticate via Telegram Login Widget (browser)."""
+    # pydantic v2
+    data = payload.model_dump()
+
+    try:
+        ok = verify_telegram_login_widget(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Verification failed: {str(e)}")
+
+    if not ok:
+        raise HTTPException(status_code=401, detail="Invalid Telegram widget data")
+
+    tg_id = str(payload.id)
+
+    # Check existing TELEGRAM user
+    result = await db.execute(
+        select(User).where(
+            (User.auth_provider == AuthProvider.TELEGRAM) &
+            (User.provider_id == tg_id)
+        )
+    )
+    user = result.scalar_one_or_none()
+
+    is_new = False
+
+    if not user:
+        referral_code = secrets.token_urlsafe(8)[:10]
+
+        tg_username = payload.username
+        if tg_username:
+            taken = await db.execute(select(User).where(User.username == tg_username))
+            if taken.scalar_one_or_none():
+                tg_username = None
+        user = User(
+            username=tg_username,
+            display_name=payload.first_name,
+            auth_provider=AuthProvider.TELEGRAM,
+            provider_id=tg_id,
+            avatar_url=payload.photo_url,
+            referral_code=referral_code,
+            accepted_tos=True,
+            accepted_privacy=True,
+            kleynodu=50,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        is_new = True
+
+        await analytics.track(TrackedEvent(
+            name="user_registered",
+            user_id=user.id,
+            session_id=None,
+            properties={"provider": "telegram_widget"}
+        ))
+    else:
+        # Update info
+        if payload.username:
+            new_username = payload.username
+            taken = await db.execute(
+                select(User).where((User.username == new_username) & (User.id != user.id))
+            )
+            if not taken.scalar_one_or_none():
+                user.username = new_username
+        if payload.first_name:
+            user.display_name = payload.first_name
+        if payload.photo_url:
+            user.avatar_url = payload.photo_url
+
+        await analytics.track(TrackedEvent(
+            name="user_login",
+            user_id=user.id,
+            session_id=None,
+            properties={"provider": "telegram_widget"}
+        ))
+
+        await db.commit()
+
+    access_token = create_access_token({"sub": str(user.id)})
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "is_new": is_new,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "display_name": user.display_name,
+            "chervontsi": user.chervontsi,
+            "kleynodu": user.kleynodu,
+            "level": user.level,
+            "experience": user.experience,
+            "glory": user.glory,
+            "energy": user.energy,
+            "max_energy": user.max_energy,
+            "referral_code": user.referral_code,
+        },
     }
 
 
@@ -310,5 +430,3 @@ async def get_me(current_user: User = Depends(get_current_user)):
         "referral_code": current_user.referral_code,
         "anomaly_score": current_user.anomaly_score
     }
-
-
