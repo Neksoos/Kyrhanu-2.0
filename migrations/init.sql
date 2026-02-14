@@ -10,41 +10,52 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255),
     auth_provider VARCHAR(20) DEFAULT 'email',
     provider_id VARCHAR(100),
-    
+
     display_name VARCHAR(100),
     avatar_url VARCHAR(500),
     age_verified BOOLEAN DEFAULT FALSE,
     accepted_tos BOOLEAN DEFAULT FALSE,
     accepted_privacy BOOLEAN DEFAULT FALSE,
-    
+
     chervontsi BIGINT DEFAULT 0,
     kleynodu INTEGER DEFAULT 0,
-    
+
     level INTEGER DEFAULT 1,
     experience BIGINT DEFAULT 0,
     glory BIGINT DEFAULT 0,
     energy INTEGER DEFAULT 100,
     max_energy INTEGER DEFAULT 100,
     energy_last_refill TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    
+
     anomaly_score FLOAT DEFAULT 0.0,
     last_tap_at TIMESTAMP WITH TIME ZONE,
     tap_pattern_data JSONB DEFAULT '{}',
-    
+
     referral_code VARCHAR(20) UNIQUE,
     referred_by INTEGER REFERENCES users(id),
-    
+
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     last_active_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     banned_at TIMESTAMP WITH TIME ZONE,
     ban_reason VARCHAR(255),
-    
+
     role VARCHAR(20) DEFAULT 'player'
 );
 
+-- Basic indexes
 CREATE INDEX IF NOT EXISTS ix_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS ix_users_email ON users(email);
+
+-- Speed index (non-unique) for provider lookups
 CREATE INDEX IF NOT EXISTS ix_users_provider ON users(auth_provider, provider_id);
+
+-- ✅ Critical: prevent duplicate players for same provider id (telegram/web)
+-- Works only when provider_id is not NULL.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_users_provider_notnull
+ON users (auth_provider, provider_id)
+WHERE provider_id IS NOT NULL;
+
+-- Helpful leaderboard / activity indexes
 CREATE INDEX IF NOT EXISTS ix_users_glory ON users(glory DESC);
 CREATE INDEX IF NOT EXISTS ix_users_active ON users(last_active_at);
 CREATE INDEX IF NOT EXISTS ix_users_referral ON users(referral_code);
@@ -67,7 +78,7 @@ CREATE TABLE IF NOT EXISTS daily_rolls (
     result_text TEXT,
     completed_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    
+
     UNIQUE(user_id, day_date)
 );
 
@@ -249,7 +260,7 @@ CREATE TABLE IF NOT EXISTS ab_test_assignments (
     test_name VARCHAR(50) NOT NULL,
     group_name VARCHAR(20) NOT NULL,
     assigned_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    
+
     UNIQUE(user_id, test_name)
 );
 
