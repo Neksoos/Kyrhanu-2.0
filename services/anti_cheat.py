@@ -3,6 +3,8 @@ Anti-cheat and anti-fraud system for Cursed Mounds.
 Server-side validation, behavioral analysis, and anomaly detection.
 """
 import time
+import hmac
+import hashlib
 import secrets
 from typing import Dict, Optional, Tuple, Any
 from datetime import datetime, timedelta
@@ -25,211 +27,239 @@ class AntiCheatService:
     Multi-layer anti-cheat:
     1. Rate limiting (hard caps)
     2. Timing analysis (human-like patterns)
-    3. (Optional) authenticity checks
+    3. HMAC verification (action authenticity)
     4. Behavioral scoring (anomaly detection)
     5. Cooldowns and sanctions
     """
     
     def __init__(self):
-        self.redis = get_redis()
+        # NOTE: Redis is initialized asynchronously in app startup.
+        # Do NOT call get_redis() at import time.
+        self._redis = None
+
+    @property
+    def redis(self):
+        """Lazy Redis client (available after init_redis())."""
+        if self._redis is None:
+            self._redis = get_redis()
+        return self._redis
+
     
     async def validate_tap(
         self,
         user_id: int,
         client_timestamp: int,  # Unix ms from client
         sequence_number: int,   # Monotonic counter from client
+        hmac_signature: str,   # HMAC of (user_id:seq:ts:nonce)
         nonce: str,
         current_anomaly_score: float
     ) -> TapValidationResult:
-        """
-        Validate tap action with multiple checks.
-        """
-        now = int(time.time() * 1000)
+        """Validate a tap action and return validation result."""
         
-        # 1. Check timestamp drift (prevent replay-ish patterns)
-        drift = abs(now - client_timestamp)
-        if drift > 30000:  # 30 seconds max drift
+        if not settings.ANTI_CHEAT_ENABLED:
+            return TapValidationResult(is_valid=True)
+        
+        # 1. Rate limiting (hard)
+        rate_ok, rate_reason = await self._check_rate_limit(user_id)
+        if not rate_ok:
             return TapValidationResult(
                 is_valid=False,
-                reason="Timestamp drift too large",
-                anomaly_delta=15.0,
-                new_anomaly_score=min(100.0, current_anomaly_score + 15.0)
+                reason=rate_reason,
+                anomaly_delta=5.0,
+                new_anomaly_score=current_anomaly_score + 5.0
             )
         
-        # 2. Rate limiting - hard cap
-        rate_key = f"ratelimit:taps:{user_id}:{now // 1000}"
-        current_count = await self.redis.incr(rate_key)
-        if current_count == 1:
-            await self.redis.expire(rate_key, 1)  # 1-second window
-        
-        max_taps_per_second = int(settings.MAX_TAPS_PER_SECOND)
-        if current_count > max_taps_per_second:
+        # 2. Sequence validation
+        seq_ok, seq_reason = await self._check_sequence(user_id, sequence_number)
+        if not seq_ok:
             return TapValidationResult(
                 is_valid=False,
-                reason="Rate limit exceeded",
+                reason=seq_reason,
+                anomaly_delta=3.0,
+                new_anomaly_score=current_anomaly_score + 3.0
+            )
+        
+        # 3. Timestamp validation
+        time_ok, time_reason = self._check_timestamp(client_timestamp)
+        if not time_ok:
+            return TapValidationResult(
+                is_valid=False,
+                reason=time_reason,
+                anomaly_delta=2.0,
+                new_anomaly_score=current_anomaly_score + 2.0
+            )
+        
+        # 4. HMAC validation
+        hmac_ok, hmac_reason = await self._check_hmac(
+            user_id, sequence_number, client_timestamp, nonce, hmac_signature
+        )
+        if not hmac_ok:
+            return TapValidationResult(
+                is_valid=False,
+                reason=hmac_reason,
                 anomaly_delta=10.0,
-                new_anomaly_score=min(100.0, current_anomaly_score + 10.0)
+                new_anomaly_score=current_anomaly_score + 10.0
             )
         
-        # 3. Sequence number check (prevent replay)
-        last_seq_key = f"seq:last:{user_id}"
-        last_seq = await self.redis.get(last_seq_key)
-        if last_seq and int(last_seq) >= sequence_number:
+        # 5. Behavioral analysis (soft)
+        anomaly_delta = await self._analyze_behavior(user_id, client_timestamp)
+        new_score = max(0.0, current_anomaly_score + anomaly_delta)
+        
+        # Apply sanctions if score too high
+        if new_score > 50:
+            await self._apply_sanction(user_id, "temporary_ban")
             return TapValidationResult(
                 is_valid=False,
-                reason="Sequence number replay",
-                anomaly_delta=30.0,
-                new_anomaly_score=min(100.0, current_anomaly_score + 30.0)
+                reason="Suspicious activity detected",
+                anomaly_delta=anomaly_delta,
+                new_anomaly_score=new_score
             )
-        await self.redis.setex(last_seq_key, 300, sequence_number)  # 5-min TTL
-        
-        # 4. Behavioral analysis - timing patterns
-        pattern_key = f"pattern:taps:{user_id}"
-        pattern_data = await cache_get(pattern_key) or {
-            "intervals": [],
-            "last_ts": None,
-            "perfect_count": 0
-        }
-        
-        anomaly_delta = 0.0
-        
-        if pattern_data["last_ts"]:
-            interval = client_timestamp - pattern_data["last_ts"]
-            
-            # Check for inhuman consistency (bot-like)
-            if len(pattern_data["intervals"]) >= 10:
-                recent_intervals = pattern_data["intervals"][-10:]
-                avg_interval = sum(recent_intervals) / len(recent_intervals)
-                variance = sum((i - avg_interval) ** 2 for i in recent_intervals) / len(recent_intervals)
-                
-                # Perfect rhythm = very low variance
-                if variance < 100:  # Less than 100ms variance
-                    pattern_data["perfect_count"] += 1
-                    if pattern_data["perfect_count"] >= settings.SUSPICIOUS_PATTERN_THRESHOLD:
-                        anomaly_delta += 5.0  # Escalating penalty
-                else:
-                    pattern_data["perfect_count"] = max(0, pattern_data["perfect_count"] - 1)
-            
-            pattern_data["intervals"].append(interval)
-            if len(pattern_data["intervals"]) > 50:
-                pattern_data["intervals"] = pattern_data["intervals"][-50:]
-        
-        pattern_data["last_ts"] = client_timestamp
-        await cache_set(pattern_key, pattern_data, expire=600)  # 10-min window
-        
-        # 5. Check for rapid-fire (autoclicker)
-        if pattern_data.get("intervals"):
-            recent = pattern_data["intervals"][-5:]
-            if all(i < settings.MIN_TAP_INTERVAL_MS for i in recent):
-                anomaly_delta += 8.0
-        
-        new_score = min(100.0, current_anomaly_score + anomaly_delta)
         
         return TapValidationResult(
             is_valid=True,
-            reason=None,
             anomaly_delta=anomaly_delta,
             new_anomaly_score=new_score
         )
     
-    # NOTE: This project intentionally does NOT rely on a client-held secret.
-    # If you later want signed actions, implement a per-session signing key
-    # delivered to the client and validated server-side.
+    async def _check_rate_limit(self, user_id: int) -> Tuple[bool, Optional[str]]:
+        """Check if user is tapping too fast."""
+        key = f"anti_cheat:taps:{user_id}"
+        now = time.time()
+        
+        # Use sliding window of 1 second
+        window_data = await cache_get(key) or []
+        window_data = [t for t in window_data if now - t < 1.0]
+        
+        if len(window_data) >= settings.MAX_TAPS_PER_SECOND:
+            return False, "Too many taps per second"
+        
+        window_data.append(now)
+        await cache_set(key, window_data, ttl=2)
+        
+        return True, None
     
-    async def apply_sanctions(self, user_id: int, anomaly_score: float) -> Dict[str, Any]:
-        """
-        Apply progressive sanctions based on anomaly score.
-        """
-        sanctions = {
-            "shadow_nerf": False,
-            "cooldown_seconds": 0,
-            "banned": False,
-            "review_required": False
+    async def _check_sequence(self, user_id: int, sequence_number: int) -> Tuple[bool, Optional[str]]:
+        """Check if sequence number is valid and monotonic."""
+        key = f"anti_cheat:seq:{user_id}"
+        last_seq = await cache_get(key) or 0
+        
+        if sequence_number <= last_seq:
+            return False, "Invalid sequence number"
+        
+        # Check for huge jumps
+        if sequence_number - last_seq > 1000:
+            return False, "Sequence number jump too large"
+        
+        await cache_set(key, sequence_number, ttl=3600)
+        
+        return True, None
+    
+    def _check_timestamp(self, client_timestamp: int) -> Tuple[bool, Optional[str]]:
+        """Validate client timestamp is reasonable."""
+        server_time = int(time.time() * 1000)
+        diff = abs(server_time - client_timestamp)
+        
+        # Allow 5 minute drift
+        if diff > 5 * 60 * 1000:
+            return False, "Timestamp drift too large"
+        
+        return True, None
+    
+    async def _check_hmac(
+        self,
+        user_id: int,
+        sequence_number: int,
+        client_timestamp: int,
+        nonce: str,
+        signature: str
+    ) -> Tuple[bool, Optional[str]]:
+        """Verify HMAC signature to prevent replay/forgery."""
+        # Get user's current HMAC key
+        key = await hmac_manager.get_current_key()
+        
+        message = f"{user_id}:{sequence_number}:{client_timestamp}:{nonce}".encode()
+        expected = hmac.new(key.encode(), message, hashlib.sha256).hexdigest()
+        
+        if not secrets.compare_digest(expected, signature):
+            return False, "Invalid signature"
+        
+        # Check nonce reuse
+        nonce_key = f"anti_cheat:nonce:{user_id}:{nonce}"
+        if await cache_get(nonce_key):
+            return False, "Nonce already used"
+        
+        await cache_set(nonce_key, True, ttl=300)  # 5 min
+        
+        return True, None
+    
+    async def _analyze_behavior(self, user_id: int, client_timestamp: int) -> float:
+        """Analyze tap timing patterns for bot-like behavior."""
+        key = f"anti_cheat:timing:{user_id}"
+        
+        # Store recent tap intervals
+        last_time = await cache_get(f"{key}:last")
+        if last_time:
+            interval = client_timestamp - last_time
+            
+            intervals = await cache_get(key) or []
+            intervals.append(interval)
+            
+            # Keep last 50 intervals
+            intervals = intervals[-50:]
+            await cache_set(key, intervals, ttl=3600)
+            
+            # Analyze pattern
+            if len(intervals) >= 20:
+                # Check for perfect rhythm (bots)
+                variance = self._calculate_variance(intervals)
+                if variance < settings.SUSPICIOUS_PATTERN_THRESHOLD:
+                    return 1.0  # Increase anomaly
+                
+                # Check for impossible speed
+                if min(intervals) < settings.MIN_TAP_INTERVAL_MS:
+                    return 2.0
+            
+        await cache_set(f"{key}:last", client_timestamp, ttl=3600)
+        
+        return -0.1  # Slowly decay anomaly score
+    
+    def _calculate_variance(self, values: list) -> float:
+        """Calculate variance of a list of numbers."""
+        if not values:
+            return 0.0
+        mean = sum(values) / len(values)
+        return sum((x - mean) ** 2 for x in values) / len(values)
+    
+    async def _apply_sanction(self, user_id: int, sanction_type: str):
+        """Apply sanction to user (temporary ban, rate limit, etc)."""
+        key = f"anti_cheat:sanction:{user_id}"
+        
+        sanctions = await cache_get(key) or {}
+        sanctions[sanction_type] = {
+            "applied_at": datetime.utcnow().isoformat(),
+            "expires_at": (datetime.utcnow() + timedelta(hours=1)).isoformat()
         }
         
-        if anomaly_score >= 100:
-            # Auto-ban
-            sanctions["banned"] = True
-            sanctions["review_required"] = True
-            
-        elif anomaly_score >= 80:
-            # Shadow nerf + cooldown
-            sanctions["shadow_nerf"] = True
-            sanctions["cooldown_seconds"] = 300  # 5 min
-            
-        elif anomaly_score >= 60:
-            # Warning cooldown
-            sanctions["cooldown_seconds"] = 60  # 1 min
-            
-        elif anomaly_score >= 40:
-            # Soft shadow nerf (reduced drops)
-            sanctions["shadow_nerf"] = True
-        
-        # Store sanctions in Redis for quick lookup
-        if sanctions["cooldown_seconds"] > 0:
-            await self.redis.setex(
-                f"sanction:cooldown:{user_id}",
-                sanctions["cooldown_seconds"],
-                "1"
-            )
-        
-        if sanctions["shadow_nerf"]:
-            await self.redis.setex(
-                f"sanction:nerf:{user_id}",
-                3600,  # 1 hour
-                str(anomaly_score)
-            )
-        
-        return sanctions
+        await cache_set(key, sanctions, ttl=3600)
     
-    async def is_under_cooldown(self, user_id: int) -> Tuple[bool, int]:
-        """Check if user is under cooldown."""
-        ttl = await self.redis.ttl(f"sanction:cooldown:{user_id}")
-        if ttl > 0:
-            return True, ttl
-        return False, 0
-    
-    async def is_shadow_nerfed(self, user_id: int) -> Tuple[bool, float]:
-        """Check if user has shadow nerf active."""
-        nerf_data = await self.redis.get(f"sanction:nerf:{user_id}")
-        if nerf_data:
-            return True, float(nerf_data)
-        return False, 0.0
-    
-    def generate_client_nonce(self) -> str:
-        """Generate nonce for client to use in HMAC."""
-        return secrets.token_hex(16)
-    
-    async def get_client_config(self, user_id: int) -> Dict[str, Any]:
-        """
-        Config sent to client for HMAC generation.
-        Includes fresh nonce.
-        """
-        nonce = self.generate_client_nonce()
-        
-        # Store nonce for validation (short TTL)
-        await self.redis.setex(f"nonce:{user_id}:{nonce}", 60, "1")
-        
-        return {
-            "nonce": nonce,
-            "max_taps_per_second": settings.MAX_TAPS_PER_SECOND,
-            "min_tap_interval_ms": settings.MIN_TAP_INTERVAL_MS,
-            "hmac_key_hint": "use server secret via /auth",  # Client gets key after auth
-        }
+    async def is_sanctioned(self, user_id: int) -> bool:
+        """Check if user has active sanctions."""
+        sanctions = await cache_get(f"anti_cheat:sanction:{user_id}")
+        return bool(sanctions)
 
 
 class HMACKeyManager:
-    """
-    Rotating HMAC keys for client-side signing.
-    """
+    """Manages HMAC keys for request signing."""
+    
     def __init__(self):
         self._current_key = None
         self._key_rotation_time = 0
     
     async def get_current_key(self) -> str:
-        """Get or rotate HMAC key."""
+        """Get current HMAC key, rotate if needed."""
         now = time.time()
         
+        # Rotate key every hour
         if now - self._key_rotation_time > 3600:  # Rotate hourly
             self._current_key = secrets.token_urlsafe(32)
             self._key_rotation_time = now
@@ -245,6 +275,8 @@ class HMACKeyManager:
             if self._current_key is None:
                 self._current_key = secrets.token_urlsafe(32)
                 await redis.setex("hmac:current_key", 7200, self._current_key)
+            elif isinstance(self._current_key, bytes):
+                self._current_key = self._current_key.decode()
         
         return self._current_key
     
