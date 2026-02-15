@@ -32,7 +32,15 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
 
   app.decorate("requireAuth", async function requireAuth(req: FastifyRequest): Promise<AuthUser> {
     const u = await (app as any).authUser(req);
-    if (!u) throw app.httpErrors.unauthorized("Unauthorized");
+    if (!u) {
+      // `@fastify/sensible` adds httpErrors at runtime, but its typing can be finicky.
+      // Use a safe runtime fallback so strict TS builds don't fail.
+      const httpErrors = (app as any).httpErrors;
+      if (httpErrors?.unauthorized) throw httpErrors.unauthorized("Unauthorized");
+      const err: any = new Error("Unauthorized");
+      err.statusCode = 401;
+      throw err;
+    }
     return u;
   });
 
