@@ -1,0 +1,309 @@
+openapi: 3.0.3
+info:
+  title: Prokliati Kurhany API
+  version: 2.0.0
+servers:
+  - url: https://YOUR_BACKEND_DOMAIN
+paths:
+  /healthz:
+    get:
+      responses:
+        "200":
+          description: ok
+  /auth/register:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+      responses:
+        "200":
+          description: tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  user: { $ref: "#/components/schemas/User" }
+        "409": { description: EMAIL_TAKEN }
+  /auth/login:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: tokens
+  /auth/refresh:
+    post:
+      responses:
+        "200":
+          description: new access token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+        "401": { description: invalid refresh }
+  /auth/logout:
+    post:
+      responses:
+        "200": { description: ok }
+  /auth/telegram/initdata:
+    post:
+      description: Mini App login via window.Telegram.WebApp.initData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [initData]
+              properties:
+                initData: { type: string }
+      responses:
+        "200":
+          description: tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  user: { $ref: "#/components/schemas/User" }
+        "409": { description: TELEGRAM_ALREADY_LINKED }
+  /auth/telegram/widget:
+    post:
+      description: Browser login via Telegram Login Widget payload (includes hash)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Telegram widget data object
+      responses:
+        "200": { description: tokens }
+        "409": { description: TELEGRAM_ALREADY_LINKED }
+  /me:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: user + today's character (auto-create)
+  /characters/generate:
+    post:
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force: { type: boolean }
+      responses:
+        "200": { description: daily character }
+        "402": { description: NOT_ENOUGH_SHARDS }
+  /inventory:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: inventory }
+  /equipment:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: equipment slots }
+    post:
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slot, item_instance_id]
+              properties:
+                slot: { type: string }
+                item_instance_id: { type: string, nullable: true }
+      responses:
+        "200": { description: ok }
+  /runs/start:
+    post:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: start run }
+  /runs/act:
+    post:
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run_id, action]
+              properties:
+                run_id: { type: string, format: uuid }
+                action: { type: string, enum: [ATTACK, DEFEND, FLEE] }
+      responses:
+        "200": { description: state/outcome }
+  /runs/finish:
+    post:
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run_id]
+              properties:
+                run_id: { type: string, format: uuid }
+      responses:
+        "200": { description: run }
+  /bosses/active:
+    get:
+      responses:
+        "200": { description: active boss }
+  /bosses/attack:
+    post:
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [live_boss_id]
+              properties:
+                live_boss_id: { type: string, format: uuid }
+      responses:
+        "200": { description: damage result }
+  /guilds:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: my guild or null }
+  /guilds/create:
+    post:
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, tag]
+              properties:
+                name: { type: string }
+                tag: { type: string }
+      responses:
+        "200": { description: guild created }
+  /guilds/join:
+    post:
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [join_code]
+              properties:
+                join_code: { type: string }
+      responses:
+        "200": { description: joined }
+  /guilds/leave:
+    post:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: left }
+  /guilds/boss/attack:
+    post:
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [live_boss_id]
+              properties:
+                live_boss_id: { type: string, format: uuid }
+      responses:
+        "200": { description: ok }
+  /seasons/active:
+    get:
+      responses:
+        "200": { description: active season }
+  /quests/today:
+    get:
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: today's quests }
+  /rewards/claim:
+    post:
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_quest_id]
+              properties:
+                user_quest_id: { type: string, format: uuid }
+      responses:
+        "200": { description: reward claimed }
+  /shop/offers:
+    get:
+      responses:
+        "200": { description: offers }
+  /shop/purchase:
+    post:
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [offer_id, provider]
+              properties:
+                offer_id: { type: string, format: uuid }
+                provider: { type: string, enum: [telegram_stars, test] }
+      responses:
+        "200": { description: purchase created }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        telegram_id: { type: integer, nullable: true }
+        telegram_username: { type: string, nullable: true }
+        email: { type: string, format: email, nullable: true }
+        created_at: { type: string }
+        last_login: { type: string, nullable: true }
+        flags: { type: object }
