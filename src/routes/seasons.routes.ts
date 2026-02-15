@@ -59,18 +59,55 @@ export async function seasonsRoutes(app: FastifyInstance) {
     if (!uq) return reply.code(404).send({ error: "NOT_FOUND" });
     if (uq.claimed_at) return reply.send({ ok: true, already: true });
 
-    // simplistic: mark claimed and grant gold if in reward json
+    // mark claimed
     await pool.query(`update user_quests set claimed_at=now() where id=$1`, [uq.id]);
 
-    const reward = uq.reward ?? {};
+    const reward: any = uq.reward ?? {};
     const gold = Number(reward.gold ?? 0);
-    if (gold > 0) {
+    const dust = Number(reward.dust ?? 0);
+    const shards = Number(reward.shards ?? 0);
+    const bpXp = Number(reward.bp_xp ?? 0);
+
+    // ensure wallets for any currencies
+    if (gold > 0 || dust > 0 || shards > 0) {
       await pool.query(
-        `insert into wallets (user_id, currency_code, balance) values ($1,'gold',0)
+        `insert into wallets (user_id, currency_code, balance) values
+           ($1, 'gold', 0),
+           ($1, 'dust', 0),
+           ($1, 'shards', 0)
          on conflict (user_id, currency_code) do nothing`,
         [au.id]
       );
+    }
+    // credit gold
+    if (gold > 0) {
       await pool.query(`update wallets set balance = balance + $2 where user_id=$1 and currency_code='gold'`, [au.id, gold]);
+    }
+    // credit dust
+    if (dust > 0) {
+      await pool.query(`update wallets set balance = balance + $2 where user_id=$1 and currency_code='dust'`, [au.id, dust]);
+    }
+    // credit shards
+    if (shards > 0) {
+      await pool.query(`update wallets set balance = balance + $2 where user_id=$1 and currency_code='shards'`, [au.id, shards]);
+    }
+    // credit Battle Pass XP
+    if (bpXp > 0) {
+      // find current active season
+      const season = await pool.query(
+        `select * from seasons where is_active=true and starts_at <= now() and ends_at > now() order by starts_at desc limit 1`
+      ).then((r) => r.rows[0]);
+      if (season) {
+        // ensure user battle pass row exists
+        const ubp = await pool.query(
+          `insert into user_battle_pass (user_id, season_id, xp, premium)
+           values ($1, $2, 0, false)
+           on conflict (user_id, season_id) do update set xp = user_battle_pass.xp
+           returning *`,
+          [au.id, season.id]
+        ).then((r) => r.rows[0]);
+        await pool.query(`update user_battle_pass set xp = xp + $2 where user_id=$1 and season_id=$3`, [au.id, bpXp, season.id]);
+      }
     }
 
     return reply.send({ ok: true, reward });
