@@ -4,6 +4,7 @@ begin;
 insert into currencies (code, name, is_premium) values
   ('gold','Золото', false),
   ('shards','Осколки', false),
+  ('dust','Курганний пил', false),
   ('stars','Telegram Stars', true)
 on conflict do nothing;
 
