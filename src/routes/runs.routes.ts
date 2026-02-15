@@ -51,22 +51,40 @@ export async function runsRoutes(app: FastifyInstance) {
     await pool.query(`update runs set state=$1::jsonb where id=$2`, [JSON.stringify(newState), run.id]);
 
     if (finished) {
-      const outcome = { result: "victory", rooms: nextRoom, rewards: [{ currency: "gold", amount: 40 }] };
+      // reward both gold and dust when a run finishes
+      const rewardGold = 40;
+      const rewardDust = 12;
+      const outcome = {
+        result: "victory",
+        rooms: nextRoom,
+        rewards: [
+          { currency: "gold", amount: rewardGold },
+          { currency: "dust", amount: rewardDust }
+        ]
+      };
       await pool.query(
         `update runs set status='finished', finished_at=now(), outcome=$1::jsonb where id=$2`,
         [JSON.stringify(outcome), run.id]
       );
+      // record transactions for each currency
       await pool.query(
         `insert into transactions (id, user_id, currency_code, amount, reason, meta, created_at)
-         values (gen_random_uuid(), $1, 'gold', 40, 'run_finish', $2::jsonb, now())`,
-        [au.id, JSON.stringify({ run_id: run.id })]
+         values 
+           (gen_random_uuid(), $1, 'gold', $2, 'run_finish', $3::jsonb, now()),
+           (gen_random_uuid(), $1, 'dust', $4, 'run_finish', $3::jsonb, now())`,
+        [au.id, rewardGold, JSON.stringify({ run_id: run.id }), rewardDust]
       );
+      // ensure wallets exist for both currencies
       await pool.query(
-        `insert into wallets (user_id, currency_code, balance) values ($1,'gold',0)
+        `insert into wallets (user_id, currency_code, balance) values
+           ($1, 'gold', 0),
+           ($1, 'dust', 0)
          on conflict (user_id, currency_code) do nothing`,
         [au.id]
       );
-      await pool.query(`update wallets set balance = balance + 40 where user_id=$1 and currency_code='gold'`, [au.id]);
+      // update balances
+      await pool.query(`update wallets set balance = balance + $2 where user_id=$1 and currency_code='gold'`, [au.id, rewardGold]);
+      await pool.query(`update wallets set balance = balance + $2 where user_id=$1 and currency_code='dust'`, [au.id, rewardDust]);
 
       return reply.send({ run_id: run.id, status: "finished", outcome });
     }
