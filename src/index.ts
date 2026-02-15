@@ -48,7 +48,7 @@ async function main() {
   const allowedHosts = new Set(entries.map((e) => e.host).filter(Boolean) as string[]);
 
   const isAllowed = (origin?: string) => {
-    if (!origin) return true; // curl/server-to-server
+    if (!origin || origin === "null") return true; // curl/server-to-server або WebView з Origin:null
     if (allowAny) return true;
     try {
       const k = originKey(origin);
@@ -72,29 +72,11 @@ async function main() {
     optionsSuccessStatus: 204
   });
 
-  // Глобальний preflight fallback (щоб не було 404 на OPTIONS)
-  app.options("*", async (req, reply) => {
-    const origin = req.headers.origin as string | undefined;
-    if (!isAllowed(origin)) return reply.code(403).send();
-
-    const reqHeaders = (req.headers["access-control-request-headers"] as string | undefined) ?? "content-type,authorization";
-    const reqMethod = (req.headers["access-control-request-method"] as string | undefined) ?? "POST";
-
-    if (origin) {
-      reply.header("Access-Control-Allow-Origin", origin);
-      reply.header("Vary", "Origin");
-    }
-
-    reply
-      .header("Access-Control-Allow-Credentials", "true")
-      .header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-      .header("Access-Control-Allow-Headers", reqHeaders)
-      .header("Access-Control-Max-Age", "86400");
-
-    // якщо браузер просив конкретний метод — ок
-    void reqMethod;
-    return reply.code(204).send();
-  });
+  // IMPORTANT:
+  // Не додаємо manual `app.options('*')`.
+  // @fastify/cors сам реєструє wildcard preflight handler.
+  // Якщо додати свій — Railway/production падає з помилкою:
+  // "Method 'OPTIONS' already declared for route '*'".
 
   app.register(authPlugin);
 
