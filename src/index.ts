@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
+import sensible from "@fastify/sensible";
 import { env } from "./env";
 import { healthcheckDb } from "./db";
 import { authPlugin } from "./auth";
@@ -16,6 +17,9 @@ async function main() {
   const app = Fastify({ logger: true });
 
   app.register(cookie);
+
+  // додає app.httpErrors.* (unauthorized/badRequest/etc) + нормальні типи
+  app.register(sensible);
 
   app.register(cors, {
     origin: (origin, cb) => {
