@@ -1,17 +1,7 @@
-# dependencies
-node_modules/
-
-# builds
+﻿node_modules/
 dist/
-build/
 .next/
-out/
-
-# env
-.env
-.env.*
+build/
+coverage/
 *.log
-
-# OS
-.DS_Store
-Thumbs.db
+.env*
