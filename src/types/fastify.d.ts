@@ -1,5 +1,8 @@
 import "fastify";
 
+// Ensure @fastify/jwt type augmentation is included so `FastifyInstance` has `jwt`.
+import "@fastify/jwt";
+
 export type AuthUser = {
   id: string;
 };
