@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import crypto from "crypto";
 import { userService } from "../services/user.service";
 import { setRefreshCookie, sanitizeUser } from "../utils/http";
-import { verifyTelegramInitData } from "../utils/telegram";
+import { verifyTelegramInitData, verifyTelegramWidgetData } from "../utils/telegram";
 
 function hashPassword(password: string) {
   const salt = crypto.randomBytes(16);
@@ -82,6 +82,7 @@ export async function authRoutes(app: FastifyInstance) {
     });
   });
 
+  // Telegram Mini App (initData) login
   app.post(
     "/auth/telegram/initdata",
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -141,6 +142,59 @@ export async function authRoutes(app: FastifyInstance) {
       });
     }
   );
+
+  // Telegram Login Widget (browser) login
+  app.post("/auth/telegram/widget", async (request, reply) => {
+    const widgetUser = request.body as any;
+    const botToken = process.env.TG_WIDGET_BOT_TOKEN || process.env.TG_BOT_TOKEN || "";
+
+    let verified: ReturnType<typeof verifyTelegramWidgetData>;
+    try {
+      verified = verifyTelegramWidgetData(widgetUser, botToken);
+    } catch (e: any) {
+      return reply.code(401).send({
+        error: "widget data invalid",
+        message: e?.message || String(e)
+      });
+    }
+
+    const telegramIdStr = verified.telegram_id;
+    if (!telegramIdStr) {
+      return reply.code(400).send({ error: "widget data missing telegram_id" });
+    }
+
+    const displayName = verified.display_name || "Player";
+
+    let user = await userService.findByTelegramId(telegramIdStr);
+
+    if (!user) {
+      user = await userService.createWithTelegram(
+        telegramIdStr,
+        verified.telegram_username ?? null,
+        displayName
+      );
+    } else {
+      await userService.updateLastLogin(user.id);
+    }
+
+    const tokens = await app.issueTokens(user.id, {
+      ip: request.ip,
+      userAgent: request.headers["user-agent"] || ""
+    });
+
+    setRefreshCookie(reply, tokens.refreshToken);
+
+    return reply.send({
+      ok: true,
+      user: {
+        id: user.id,
+        display_name: user.display_name,
+        telegram_id: user.telegram_id,
+        telegram_username: user.telegram_username
+      },
+      accessToken: tokens.accessToken
+    });
+  });
 
   app.post("/auth/refresh", async (request, reply) => {
     const refreshToken =
