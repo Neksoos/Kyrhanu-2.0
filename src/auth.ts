@@ -25,10 +25,13 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
     try {
       const header = req.headers?.authorization;
       if (!header) return null;
+
       const [type, token] = header.split(" ");
       if (type !== "Bearer" || !token) return null;
+
       const payload: any = app.jwt.verify(token);
       if (!payload?.sub) return null;
+
       return { id: String(payload.sub) };
     } catch {
       return null;
