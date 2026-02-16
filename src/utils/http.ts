@@ -1,33 +1,23 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyReply } from "fastify";
 
-/**
- * Refresh cookie helper.
- * IMPORTANT: For cross-domain фронт/бек в production потрібні:
- *   SameSite=None + Secure=true
- * А в dev "none" без HTTPS ламається в браузерах, тому ставимо "lax".
- */
-export function setRefreshCookie(
-  app: FastifyInstance,
-  reply: FastifyReply,
-  token: string,
-) {
-  // We don't rely on a custom `app.config` decorator.
-  // Railway/Node environments expose NODE_ENV via process.env.
-  const isProd = (process.env.NODE_ENV ?? "production") === "production";
-
+export function setRefreshCookie(reply: FastifyReply, token: string) {
   reply.setCookie("refresh_token", token, {
-    path: "/",
     httpOnly: true,
-    secure: isProd,
-    // In production we need cross-site cookies (frontend and backend are on different domains)
-    // so SameSite must be "none" and `secure` must be true.
-    // In local/dev environments, "none" without HTTPS breaks in most browsers.
-    sameSite: isProd ? "none" : "lax",
-    // ~30 days (should match backend refresh expiry)
+    sameSite: "lax",
+    secure: true,
+    path: "/",
     maxAge: 60 * 60 * 24 * 30,
   });
 }
 
 export function clearRefreshCookie(reply: FastifyReply) {
   reply.clearCookie("refresh_token", { path: "/" });
+}
+
+/**
+ * Strip sensitive fields before returning a user object to the client.
+ */
+export function sanitizeUser<T extends Record<string, any>>(user: T): Omit<T, "password_hash"> {
+  const { password_hash, ...safe } = user as any;
+  return safe;
 }
