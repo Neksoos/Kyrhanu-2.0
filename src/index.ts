@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import sensible from "@fastify/sensible";
+import jwt from "@fastify/jwt";
 import { env } from "./env";
 import { healthcheckDb } from "./db";
 import { authPlugin } from "./auth";
@@ -50,6 +51,10 @@ async function main() {
 
   app.register(cookie);
   app.register(sensible);
+
+  // JWT plugin must be registered to add `app.jwt` (sign/verify/etc.)
+  // and to get correct TypeScript types.
+  app.register(jwt, { secret: env.JWT_SECRET });
 
   const entries = env.CORS_ORIGINS.map(normalizeOriginEntry);
   // Якщо список пустий (наприклад, env заданий як порожній рядок) — не ламаємо запити,
