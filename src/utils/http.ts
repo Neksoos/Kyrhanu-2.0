@@ -1,23 +1,29 @@
 import type { FastifyReply } from "fastify";
 
-export function setRefreshCookie(reply: FastifyReply, token: string) {
-  reply.setCookie("refresh_token", token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: true,
-    path: "/",
-    maxAge: 60 * 60 * 24 * 30,
-  });
-}
-
-export function clearRefreshCookie(reply: FastifyReply) {
-  reply.clearCookie("refresh_token", { path: "/" });
+/**
+ * Make sure we never leak sensitive things in API responses.
+ * (Used for user objects and other payloads.)
+ */
+export function sanitizeUser<T extends Record<string, any>>(user: T): Omit<T, "password" | "password_hash" | "refresh_hash"> {
+  const copy: any = { ...user };
+  delete copy.password;
+  delete copy.password_hash;
+  delete copy.refresh_hash;
+  return copy;
 }
 
 /**
- * Strip sensitive fields before returning a user object to the client.
+ * Sets refresh token cookie.
+ * NOTE: uses env vars only (Railway-friendly).
  */
-export function sanitizeUser<T extends Record<string, any>>(user: T): Omit<T, "password_hash"> {
-  const { password_hash, ...safe } = user as any;
-  return safe;
+export function setRefreshCookie(reply: FastifyReply, token: string) {
+  const isProd = (process.env.NODE_ENV ?? "production") === "production";
+
+  reply.setCookie("refreshToken", token, {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 30, // 30 days
+  });
 }
