@@ -3,5 +3,5 @@ dist/
 .next/
 build/
 coverage/
-*.log
-.env*
+log/
+.env
