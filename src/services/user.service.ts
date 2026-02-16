@@ -8,7 +8,7 @@ import { pool } from "../db";
  */
 
 export type DbUserRow = {
-  id: number;
+  id: string;
   email: string | null;
   password_hash: string | null;
   telegram_id: string | null;
@@ -53,7 +53,7 @@ export async function findByTelegramId(
   return q.rows[0] ?? null;
 }
 
-export async function findById(userId: number): Promise<DbUserRow | null> {
+export async function findById(userId: string): Promise<DbUserRow | null> {
   const q = await pool.query<DbUserRow>(
     `select ${USER_SELECT}
      from users
@@ -63,6 +63,9 @@ export async function findById(userId: number): Promise<DbUserRow | null> {
   );
   return q.rows[0] ?? null;
 }
+
+// Convenience named export (used by auth plugin)
+export const getUserById = findById;
 
 export async function createWithEmail(
   email: string,
@@ -91,7 +94,7 @@ export async function createWithTelegram(
 }
 
 export async function linkTelegramIdToUser(
-  userId: number,
+  userId: string,
   telegramId: string,
   telegramUsername: string | null = null,
 ): Promise<void> {
@@ -105,7 +108,7 @@ export async function linkTelegramIdToUser(
   );
 }
 
-export async function updateUserLastLogin(userId: number): Promise<void> {
+export async function updateUserLastLogin(userId: string): Promise<void> {
   await pool.query(
     `update users set last_login = now(), updated_at = now() where id = $1`,
     [userId],
@@ -117,7 +120,7 @@ export async function updateUserLastLogin(userId: number): Promise<void> {
  *
  * Current gameplay routes already "ensure" these on /me, so this is defensive.
  */
-export async function ensureInitialPlayerData(userId: number): Promise<void> {
+export async function ensureInitialPlayerData(userId: string): Promise<void> {
   await pool.query(
     `insert into inventories (user_id)
      values ($1)
@@ -142,7 +145,9 @@ export async function createUserFromTelegram(tg: {
 }) {
   const telegramId = String(tg.telegram_id ?? tg.id ?? "");
   const telegramUsername =
-    (tg.telegram_username ?? tg.username ?? null) === "" ? null : (tg.telegram_username ?? tg.username ?? null);
+    (tg.telegram_username ?? tg.username ?? null) === ""
+      ? null
+      : (tg.telegram_username ?? tg.username ?? null);
 
   if (!telegramId) {
     throw new Error("telegram_id is required");
@@ -155,18 +160,18 @@ export async function findUserByTelegramId(telegramId: string) {
 }
 
 export async function linkTelegramToUser(
-  userId: number,
+  userId: string,
   telegramId: string,
   telegramUsername: string | null = null,
 ) {
   return linkTelegramIdToUser(userId, telegramId, telegramUsername);
 }
 
-export async function updateLastLogin(userId: number) {
+export async function updateLastLogin(userId: string) {
   return updateUserLastLogin(userId);
 }
 
-export async function createInitialPlayerData(userId: number) {
+export async function createInitialPlayerData(userId: string) {
   return ensureInitialPlayerData(userId);
 }
 
