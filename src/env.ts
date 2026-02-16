@@ -47,7 +47,12 @@ export const env = {
   TG_BOT_TOKEN: req("TG_BOT_TOKEN"),
   TG_WIDGET_BOT_TOKEN: process.env.TG_WIDGET_BOT_TOKEN ?? req("TG_BOT_TOKEN"),
 
-  CORS_ORIGINS: (process.env.CORS_ORIGINS ?? "http://localhost:3000")
+  // IMPORTANT:
+  // Якщо CORS_ORIGINS не заданий у Railway, preflight (OPTIONS) з фронту буде падати 404,
+  // і браузер/Telegram WebView покаже "Failed to fetch".
+  // Тому дефолт — "*" (дозволити всі), а в продакшені краще явно задати allowlist:
+  //   CORS_ORIGINS=https://<front-domain>
+  CORS_ORIGINS: (process.env.CORS_ORIGINS ?? "*")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
