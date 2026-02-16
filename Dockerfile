@@ -2,13 +2,12 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 
-# Dependencies (no lockfile in repo -> use npm install)
 COPY package.json ./
 RUN npm install --no-audit --no-fund
 
-# Build TS -> dist
 COPY tsconfig.json ./
 COPY src ./src
+COPY sql ./sql
 RUN npm run build
 
 # ---- Runtime stage ----
@@ -17,14 +16,14 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8080
 
-# Install only prod deps
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
-# App artifacts
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/sql ./sql
 COPY openapi.yaml ./openapi.yaml
-COPY sql ./sql
 
 EXPOSE 8080
-CMD ["sh", "-c", "node dist/scripts/migrate.js && node dist/index.js"]
+
+# ✅ Міграції запускаються перед стартом сервера
+CMD ["sh", "-c", "node dist/index.js"]
