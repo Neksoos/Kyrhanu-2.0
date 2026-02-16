@@ -4,7 +4,9 @@ import type { FastifyReply } from "fastify";
  * Make sure we never leak sensitive things in API responses.
  * (Used for user objects and other payloads.)
  */
-export function sanitizeUser<T extends Record<string, any>>(user: T): Omit<T, "password" | "password_hash" | "refresh_hash"> {
+export function sanitizeUser<T extends Record<string, any>>(
+  user: T
+): Omit<T, "password" | "password_hash" | "refresh_hash"> {
   const copy: any = { ...user };
   delete copy.password;
   delete copy.password_hash;
@@ -19,11 +21,12 @@ export function sanitizeUser<T extends Record<string, any>>(user: T): Omit<T, "p
 export function setRefreshCookie(reply: FastifyReply, token: string) {
   const isProd = (process.env.NODE_ENV ?? "production") === "production";
 
-  reply.setCookie("refreshToken", token, {
+  // Keep cookie name consistent with backend routes and frontend expectations.
+  reply.setCookie("refresh_token", token, {
     httpOnly: true,
     secure: isProd,
     sameSite: isProd ? "none" : "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30, // 30 days
+    maxAge: 60 * 60 * 24 * 30 // 30 days
   });
 }
