@@ -1,42 +1,76 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import fp from "fastify-plugin";
-import crypto from "crypto";
-import { pool } from "./db/pool";
+import fp from 'fastify-plugin';
+import jwt from '@fastify/jwt';
+import crypto from 'node:crypto';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 
-function sha256Hex(input: string) {
-  return crypto.createHash("sha256").update(input).digest("hex");
+import { env } from './env';
+import { getUserById } from './services/user.service';
+
+type JwtPayload = {
+  sub: string;
+  role?: string;
+  type?: 'access' | 'refresh';
+};
+
+function deriveJwtSecret(): string {
+  const base = env.TG_BOT_TOKEN || env.TG_WIDGET_BOT_TOKEN || 'dev-secret';
+  return crypto.createHash('sha256').update(base).digest('hex');
 }
 
-function reqIpSafe() {
-  return "";
+function unauthorized(message = 'Unauthorized'): Error {
+  const err = new Error(message) as Error & { statusCode?: number };
+  err.statusCode = 401;
+  return err;
+}
+
+function getBearerToken(req: FastifyRequest): string | null {
+  const h = req.headers.authorization;
+  if (!h) return null;
+  const m = /^Bearer\s+(.+)$/i.exec(h);
+  return m?.[1] ?? null;
 }
 
 export const authPlugin = fp(async function authPlugin(app: FastifyInstance) {
-  // issue access+refresh; stores refresh hash in DB
-  app.decorate("issueTokens", async function issueTokens(userId: string | number) {
-    const uid = String(userId);
-    const access = app.jwt.sign({ sub: uid }, { expiresIn: "15m" });
+  const secret = env.JWT_SECRET && env.JWT_SECRET.length >= 16 ? env.JWT_SECRET : deriveJwtSecret();
 
-    const refreshPlain = `${uid}.${Date.now()}.${Math.random()}`;
-    const refreshHash = sha256Hex(refreshPlain);
+  await app.register(jwt, { secret });
 
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString();
+  app.decorate('issueTokens', (userId: string) => {
+    const sub = String(userId);
+    const accessToken = app.jwt.sign({ type: 'access' }, { sub, expiresIn: '15m' });
+    const refreshToken = app.jwt.sign({ type: 'refresh' }, { sub, expiresIn: '30d' });
+    return { accessToken, refreshToken };
+  });
 
-    // store refresh hash
-    await pool.query(
-      `insert into auth_sessions (id, user_id, refresh_token_hash, user_agent, ip, created_at, expires_at)
-       values (gen_random_uuid(), $1, $2, $3, $4, now(), $5)`,
-      [uid, refreshHash, "", reqIpSafe(), expiresAt]
-    );
+  app.decorate('requireAuth', async (req: FastifyRequest) => {
+    const token = getBearerToken(req);
+    if (!token) throw unauthorized('Missing access token');
 
-    return { accessToken: access, refreshToken: refreshPlain, refreshExpiresAt: expiresAt };
+    let payload: JwtPayload;
+    try {
+      payload = app.jwt.verify<JwtPayload>(token);
+    } catch {
+      throw unauthorized('Invalid access token');
+    }
+
+    if (!payload?.sub) throw unauthorized('Invalid access token');
+    if (payload.type && payload.type !== 'access') throw unauthorized('Invalid access token');
+
+    const user = await getUserById(payload.sub);
+    if (!user) throw unauthorized('User not found');
+
+    const au = { id: payload.sub, role: payload.role };
+    req.authUser = au;
+    return au;
+  });
+
+  app.decorate('authUser', async (req: FastifyRequest) => {
+    try {
+      return await app.requireAuth(req);
+    } catch {
+      return null;
+    }
   });
 });
 
-declare module "fastify" {
-  interface FastifyInstance {
-    issueTokens: (
-      userId: string | number
-    ) => Promise<{ accessToken: string; refreshToken: string; refreshExpiresAt: string }>;
-  }
-}
+export default authPlugin;
