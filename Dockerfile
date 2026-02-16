@@ -7,7 +7,6 @@ RUN npm install --no-audit --no-fund
 
 COPY tsconfig.json ./
 COPY src ./src
-COPY sql ./sql
 RUN npm run build
 
 # ---- Runtime stage ----
@@ -20,10 +19,10 @@ COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
 COPY --from=build /app/dist ./dist
-COPY --from=build /app/sql ./sql
 COPY openapi.yaml ./openapi.yaml
+COPY sql ./sql
 
 EXPOSE 8080
 
-# ✅ Міграції запускаються перед стартом сервера
-CMD ["sh", "-c", "node dist/index.js"]
+# ✅ спочатку міграції (idempotent), потім сервер
+CMD ["sh", "-c", "node dist/scripts/migrate.js && node dist/index.js"]
