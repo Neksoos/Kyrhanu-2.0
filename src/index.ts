@@ -43,7 +43,9 @@ async function main() {
   app.register(sensible);
 
   const entries = env.CORS_ORIGINS.map(normalizeOriginEntry);
-  const allowAny = entries.some((e) => e.any);
+  // Якщо список пустий (наприклад, env заданий як порожній рядок) — не ламаємо запити,
+  // дозволяємо все і даємо змогу сервісу працювати.
+  const allowAny = entries.length === 0 || entries.some((e) => e.any);
   const allowedOrigins = new Set(entries.map((e) => e.origin).filter(Boolean) as string[]);
   const allowedHosts = new Set(entries.map((e) => e.host).filter(Boolean) as string[]);
 
