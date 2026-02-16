@@ -1,67 +1,100 @@
-import type { FastifyInstance } from "fastify";
-import { verifyTelegramInitData } from "../telegram/verify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { userService } from "../services/user.service";
-import { sanitizeUser, setRefreshCookie } from "../utils/http";
+import { verifyTelegramInitData } from "../utils/telegram";
 
 export async function authRoutes(app: FastifyInstance) {
-  // Telegram WebApp initData -> login/register
-  app.post("/auth/telegram/initdata", async (request, reply) => {
-    const { initData } = request.body as any;
-    if (!initData) return reply.code(400).send({ error: "initData required" });
+  app.post(
+    "/auth/telegram/initdata",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = request.body as any;
+      const initData: string = body?.initData;
 
-    const verified = verifyTelegramInitData(initData, process.env.TG_BOT_TOKEN || "");
-    const tg = verified.user;
+      if (!initData) {
+        return reply.code(400).send({ error: "initData required" });
+      }
 
-    let user = await userService.findByTelegramId(tg.id);
-    if (!user) {
-      user = await userService.createFromTelegram(tg);
-    } else {
-      await userService.updateLastLogin(user.id);
+      let verified: ReturnType<typeof verifyTelegramInitData>;
+      try {
+        verified = verifyTelegramInitData(initData, process.env.TG_BOT_TOKEN || "");
+      } catch (e: any) {
+        return reply.code(401).send({
+          error: "initData invalid",
+          message: e?.message || String(e)
+        });
+      }
+
+      const telegramIdStr = verified.telegram_id;
+      if (!telegramIdStr) {
+        return reply.code(400).send({ error: "initData missing telegram_id" });
+      }
+
+      const displayName =
+        [verified.first_name, verified.last_name].filter(Boolean).join(" ") ||
+        "Player";
+
+      let user = await userService.findByTelegramId(telegramIdStr);
+
+      if (!user) {
+        user = await userService.createWithTelegram(
+          telegramIdStr,
+          verified.telegram_username ?? null,
+          displayName
+        );
+      } else {
+        await userService.updateLastLogin(user.id);
+      }
+
+      const tokens = await app.issueTokens(user.id, {
+        ip: request.ip,
+        userAgent: request.headers["user-agent"] || ""
+      });
+
+      return reply.send({
+        ok: true,
+        user: {
+          id: user.id,
+          display_name: user.display_name,
+          telegram_id: user.telegram_id,
+          telegram_username: user.telegram_username
+        },
+        ...tokens
+      });
+    }
+  );
+
+  app.post("/auth/refresh", async (request, reply) => {
+    const refreshToken = request.cookies?.refresh_token;
+    if (!refreshToken) {
+      return reply.code(401).send({ error: "Missing refresh token" });
     }
 
-    const tokens = await app.issueTokens(String(user.id));
-    setRefreshCookie(reply, tokens.refreshToken);
+    const user = await userService.findByRefreshToken(refreshToken);
+    if (!user) {
+      return reply.code(401).send({ error: "Invalid refresh token" });
+    }
 
-    return reply.send({
-      user: sanitizeUser(user),
-      accessToken: tokens.accessToken,
+    const tokens = await app.issueTokens(user.id, {
+      ip: request.ip,
+      userAgent: request.headers["user-agent"] || ""
     });
+
+    return reply.send({ ok: true, ...tokens });
   });
 
-  // Refresh access token
-  app.post("/auth/refresh", async (request, reply) => {
-    const refreshToken = (request.cookies as any)?.refreshToken;
-    if (!refreshToken) return reply.code(401).send({ error: "No refresh token" });
-
-    const current = await userService.findByRefreshToken(refreshToken);
-    if (!current) return reply.code(401).send({ error: "Invalid refresh token" });
-
-    const tokens = await app.issueTokens(String(current.id));
-    setRefreshCookie(reply, tokens.refreshToken);
-
-    return reply.send({ accessToken: tokens.accessToken });
-  });
-
-  // Logout
   app.post("/auth/logout", async (request, reply) => {
-    const refreshToken = (request.cookies as any)?.refreshToken;
-    if (refreshToken) await userService.invalidateRefreshToken(refreshToken);
+    const refreshToken = request.cookies?.refresh_token;
+    if (refreshToken) {
+      await userService.invalidateRefreshToken(refreshToken);
+    }
 
-    setRefreshCookie(reply, "");
+    reply.clearCookie("refresh_token", { path: "/" });
     return reply.send({ ok: true });
   });
 
-  // Get current user (by refresh cookie)
   app.get("/auth/me", async (request, reply) => {
-    const refreshToken = (request.cookies as any)?.refreshToken;
-    if (!refreshToken) return reply.code(401).send({ error: "Unauthorized" });
-
-    const user = await userService.findByRefreshToken(refreshToken);
+    const user = await app.authUser(request);
     if (!user) return reply.code(401).send({ error: "Unauthorized" });
 
-    return reply.send({ user: sanitizeUser(user) });
+    return reply.send({ ok: true, user });
   });
-
-  // DEV endpoint
-  app.get("/auth/ping", async (_req, reply) => reply.send({ ok: true }));
 }
