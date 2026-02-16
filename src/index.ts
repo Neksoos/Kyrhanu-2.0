@@ -20,14 +20,10 @@ function normalizeOriginEntry(v: string): { origin?: string; host?: string; any?
   if (!s) return {};
   if (s === "*") return { any: true };
   try {
-    // якщо дали повний URL
     const u = new URL(s.startsWith("http") ? s : `https://${s}`);
-    // якщо запис був із схемою — збережемо origin, і хост теж
     if (s.startsWith("http")) return { origin: u.origin, host: u.host };
-    // якщо запис без схеми — трактуємо як host allowlist
     return { host: u.host };
   } catch {
-    // fallback
     return { host: s };
   }
 }
@@ -39,11 +35,8 @@ function originKey(origin: string): { origin: string; host: string } {
 }
 
 async function main() {
-  // Авто-міграції при старті (SQL файли в /sql). Безпечно повторювати (IF NOT EXISTS / ON CONFLICT).
-  // Якщо треба вимкнути — встанови AUTO_MIGRATE=false.
   if ((process.env.AUTO_MIGRATE ?? "true").toLowerCase() !== "false") {
     const { applied } = await runMigrations();
-    // eslint-disable-next-line no-console
     console.log("DB migrations applied:", applied);
   }
 
@@ -57,14 +50,12 @@ async function main() {
   app.register(jwt, { secret: env.JWT_SECRET });
 
   const entries = env.CORS_ORIGINS.map(normalizeOriginEntry);
-  // Якщо список пустий (наприклад, env заданий як порожній рядок) — не ламаємо запити,
-  // дозволяємо все і даємо змогу сервісу працювати.
   const allowAny = entries.length === 0 || entries.some((e) => e.any);
   const allowedOrigins = new Set(entries.map((e) => e.origin).filter(Boolean) as string[]);
   const allowedHosts = new Set(entries.map((e) => e.host).filter(Boolean) as string[]);
 
   const isAllowed = (origin?: string) => {
-    if (!origin || origin === "null") return true; // curl/server-to-server або WebView з Origin:null
+    if (!origin || origin === "null") return true;
     if (allowAny) return true;
     try {
       const k = originKey(origin);
@@ -75,10 +66,8 @@ async function main() {
     }
   };
 
-  // CORS plugin
   app.register(cors, {
     origin: (origin, cb) => {
-      // fastify-cors при `true` віддзеркалює origin (і це сумісно з credentials)
       if (isAllowed(origin ?? undefined)) return cb(null, true);
       return cb(null, false);
     },
@@ -87,12 +76,6 @@ async function main() {
     allowedHeaders: ["Content-Type", "Authorization"],
     optionsSuccessStatus: 204
   });
-
-  // IMPORTANT:
-  // Не додаємо manual `app.options('*')`.
-  // @fastify/cors сам реєструє wildcard preflight handler.
-  // Якщо додати свій — Railway/production падає з помилкою:
-  // "Method 'OPTIONS' already declared for route '*'".
 
   app.register(authPlugin);
 
