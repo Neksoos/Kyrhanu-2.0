@@ -1,22 +1,20 @@
-import 'fastify';
-import type { FastifyRequest } from 'fastify';
-import type { FastifyJwt } from '@fastify/jwt';
+import "fastify";
 
-type AuthUser = {
+export type AuthUser = {
   id: string;
-  role?: string;
 };
 
-declare module 'fastify' {
+declare module "fastify" {
   interface FastifyInstance {
-    jwt: FastifyJwt;
+    requireAuth: (req: any) => Promise<AuthUser>;
+    authUser: (req: any) => Promise<AuthUser | null>;
 
-    issueTokens: (userId: string) => { accessToken: string; refreshToken: string };
-    requireAuth: (req: FastifyRequest) => Promise<AuthUser>;
-    authUser: (req: FastifyRequest) => Promise<AuthUser | null>;
-  }
-
-  interface FastifyRequest {
-    authUser?: AuthUser;
+    issueTokens: (
+      userId: string,
+      meta?: { ip?: string; userAgent?: string }
+    ) => Promise<{
+      accessToken: string;
+      refreshToken: string;
+    }>;
   }
 }
