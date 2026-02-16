@@ -143,7 +143,8 @@ export async function authRoutes(app: FastifyInstance) {
   );
 
   app.post("/auth/refresh", async (request, reply) => {
-    const refreshToken = request.cookies?.refresh_token ?? (request.cookies as any)?.refreshToken;
+    const refreshToken =
+      request.cookies?.refresh_token ?? (request.cookies as any)?.refreshToken;
     if (!refreshToken) {
       return reply.code(401).send({ error: "Missing refresh token" });
     }
@@ -163,7 +164,8 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   app.post("/auth/logout", async (request, reply) => {
-    const refreshToken = request.cookies?.refresh_token ?? (request.cookies as any)?.refreshToken;
+    const refreshToken =
+      request.cookies?.refresh_token ?? (request.cookies as any)?.refreshToken;
     if (refreshToken) {
       await userService.invalidateRefreshToken(refreshToken);
     }
@@ -178,7 +180,8 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.send({ ok: true, user: u });
   };
 
-  // Keep both paths to match older frontend calls.
+  // Minimal user info via auth.
   app.get("/auth/me", meHandler);
-  app.get("/me", meHandler);
+  // NOTE: We no longer register a generic `/me` here to avoid clashing with
+  // the `/me` route defined in game.routes.ts, which returns user + character.
 }
