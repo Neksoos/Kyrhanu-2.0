@@ -12,6 +12,7 @@ import { bossesRoutes } from "./routes/bosses.routes";
 import { guildsRoutes } from "./routes/guilds.routes";
 import { seasonsRoutes } from "./routes/seasons.routes";
 import { shopRoutes } from "./routes/shop.routes";
+import { runMigrations } from "./migrations";
 
 function normalizeOriginEntry(v: string): { origin?: string; host?: string; any?: boolean } {
   const s = v.trim().replace(/\/+$/, "");
@@ -37,6 +38,14 @@ function originKey(origin: string): { origin: string; host: string } {
 }
 
 async function main() {
+  // Авто-міграції при старті (SQL файли в /sql). Безпечно повторювати (IF NOT EXISTS / ON CONFLICT).
+  // Якщо треба вимкнути — встанови AUTO_MIGRATE=false.
+  if ((process.env.AUTO_MIGRATE ?? "true").toLowerCase() !== "false") {
+    const { applied } = await runMigrations();
+    // eslint-disable-next-line no-console
+    console.log("DB migrations applied:", applied);
+  }
+
   const app = Fastify({ logger: true });
 
   app.register(cookie);

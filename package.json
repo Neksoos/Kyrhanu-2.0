@@ -7,6 +7,9 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "db:migrate": "node dist/scripts/migrate.js",
+    "db:migrate:build": "npm run build && node dist/scripts/migrate.js",
+    "db:migrate:dev": "tsx src/scripts/migrate.ts",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

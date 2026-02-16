@@ -1,67 +1,126 @@
-import { hmacSha256, hmacSha256Hex, sha256Hex, safeEqual } from "./crypto";
+import crypto from "crypto";
+import { safeEqual } from "./crypto";
 
-/**
- * Telegram WebApp initData (Mini App) verification
- * Docs: https://core.telegram.org/bots/webapps#validating-data-received-via-the-web-app
- *
- * Steps:
- * 1) Parse initData querystring into key/value map (URL-decoded)
- * 2) Build data_check_string: sorted "key=value" pairs (excluding hash) joined by "\n"
- * 3) secret_key = HMAC_SHA256(key="WebAppData", data=<bot_token>)
- * 4) computed_hash = HMAC_SHA256_HEX(key=secret_key, data=data_check_string)
- * 5) Compare computed_hash with provided hash (timing-safe)
- */
-function parseInitData(qs: string): Record<string, string> {
-  const params = new URLSearchParams(qs);
-  const out: Record<string, string> = {};
-  for (const [k, v] of params.entries()) out[k] = v;
-  return out;
+function normalizeInitData(raw: string): string {
+  let s = (raw ?? "").trim();
+  if (!s) return s;
+
+  // Some libs pass full query/hash like "?tgWebAppData=...&tgWebAppVersion=..."
+  if (s.startsWith("?") || s.startsWith("#")) s = s.slice(1);
+
+  // If it looks like launch params, extract tgWebAppData.
+  if (s.includes("tgWebAppData=")) {
+    const outer = new URLSearchParams(s);
+    const tgWebAppData = outer.get("tgWebAppData");
+    if (tgWebAppData) {
+      // URLSearchParams.get decodes once, resulting in a standard initData string.
+      s = tgWebAppData;
+    }
+  }
+
+  return s.trim();
 }
 
-export type TelegramWebAppUser = {
-  id: number;
-  is_bot?: boolean;
-  first_name?: string;
-  last_name?: string;
-  username?: string;
-  language_code?: string;
-  is_premium?: boolean;
-  photo_url?: string;
-};
+/**
+ * Verify Telegram Login Widget payload.
+ *
+ * Returns normalized telegram user info on success.
+ */
+export function verifyTelegramWidgetData(
+  authData: Record<string, any>,
+  botToken: string,
+) {
+  const token = (botToken ?? "").trim();
+  if (!token) throw new Error("TG_WIDGET_BOT_TOKEN missing");
 
-export function verifyTelegramInitData(initData: string, botToken: string, maxAgeSec = 86400) {
-  if (!initData) throw new Error("initData missing");
+  const { hash, ...data } = authData;
+  if (!hash || typeof hash !== "string") throw new Error("widget hash missing");
 
-  const data = parseInitData(initData);
-  const hash = data.hash;
-  if (!hash) throw new Error("initData missing hash");
-
-  const authDate = Number(data.auth_date ?? "0");
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (!authDate || nowSec - authDate > maxAgeSec) throw new Error("initData auth_date expired");
-
-  const dataCheckString = Object.entries(data)
-    .filter(([k]) => k !== "hash")
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}=${v}`)
+  const sortedKeys = Object.keys(data).sort();
+  const dataCheckString = sortedKeys
+    .map((key) => `${key}=${data[key]}`)
     .join("\n");
 
-  // secret_key = HMAC_SHA256(key="WebAppData", data=<bot_token>)
-  const secretKey = hmacSha256("WebAppData", botToken);
-  const computed = hmacSha256Hex(secretKey, dataCheckString);
+  const secretKey = crypto.createHash("sha256").update(token).digest();
+  const computedHash = crypto
+    .createHmac("sha256", secretKey)
+    .update(dataCheckString)
+    .digest("hex");
 
-  if (!safeEqual(computed, hash)) throw new Error("initData hash mismatch");
+  if (!safeEqual(computedHash, hash)) {
+    throw new Error("widget hash mismatch");
+  }
 
-  if (!data.user) throw new Error("initData missing user");
+  const telegram_id = String(authData.id ?? authData.user_id ?? "");
+  if (!telegram_id) throw new Error("widget id missing");
 
-  let user: TelegramWebAppUser | null = null;
+  const auth_date = Number(authData.auth_date ?? 0);
+
+  return {
+    telegram_id,
+    telegram_username: authData.username ?? null,
+    first_name: authData.first_name ?? null,
+    last_name: authData.last_name ?? null,
+    photo_url: authData.photo_url ?? null,
+    auth_date,
+    hash,
+    raw: authData,
+  } as const;
+}
+
+/**
+ * Verify Telegram WebApp initData.
+ *
+ * Algorithm per Telegram docs:
+ *  1) Build data_check_string from all pairs except "hash" (sorted by key)
+ *  2) secret_key = HMAC_SHA256(key="WebAppData", msg=bot_token)
+ *  3) hash = HMAC_SHA256(key=secret_key, msg=data_check_string)
+ */
+export function verifyTelegramInitData(initDataRaw: string, botToken: string) {
+  const token = (botToken ?? "").trim();
+  if (!token) throw new Error("TG_BOT_TOKEN missing");
+
+  const initData = normalizeInitData(initDataRaw);
+  if (!initData) throw new Error("initData missing");
+
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash");
+  if (!hash) throw new Error("initData hash missing");
+
+  const pairs: [string, string][] = [];
+  params.forEach((value, key) => {
+    if (key === "hash") return;
+    pairs.push([key, value]);
+  });
+
+  pairs.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const dataCheckString = pairs.map(([k, v]) => `${k}=${v}`).join("\n");
+
+  const secretKey = crypto
+    .createHmac("sha256", "WebAppData")
+    .update(token)
+    .digest();
+
+  const computedHash = crypto
+    .createHmac("sha256", secretKey)
+    .update(dataCheckString)
+    .digest("hex");
+
+  if (!safeEqual(computedHash, hash)) {
+    throw new Error("initData hash mismatch");
+  }
+
+  const userRaw = params.get("user");
+  if (!userRaw) throw new Error("initData user missing");
+
+  let user: any;
   try {
-    user = JSON.parse(data.user) as TelegramWebAppUser;
+    user = JSON.parse(userRaw);
   } catch {
     throw new Error("initData user JSON invalid");
   }
 
-  if (!user?.id) throw new Error("initData user.id missing");
+  const auth_date = Number(params.get("auth_date") ?? 0);
 
   return {
     telegram_id: String(user.id),
@@ -69,53 +128,12 @@ export function verifyTelegramInitData(initData: string, botToken: string, maxAg
     first_name: user.first_name ?? null,
     last_name: user.last_name ?? null,
     photo_url: user.photo_url ?? null,
-    auth_date: authDate,
-    query_id: data.query_id ?? null,
-    chat_instance: data.chat_instance ?? null,
-    chat_type: data.chat_type ?? null,
-    start_param: data.start_param ?? null
-  };
+    auth_date,
+    query_id: params.get("query_id") ?? null,
+    hash,
+    raw: initData,
+  } as const;
 }
 
-/**
- * Telegram Login Widget verification (browser widget)
- * Docs: https://core.telegram.org/widgets/login#checking-authorization
- *
- * secret_key = SHA256(bot_token)
- * computed_hash = HMAC_SHA256_HEX(key=secret_key, data=data_check_string)
- */
-export function verifyTelegramWidgetData(payload: Record<string, any>, botToken: string, maxAgeSec = 86400) {
-  const data: Record<string, string> = {};
-  for (const [k, v] of Object.entries(payload)) {
-    if (v === undefined || v === null) continue;
-    data[k] = String(v);
-  }
-
-  const hash = data.hash;
-  if (!hash) throw new Error("widget missing hash");
-
-  const authDate = Number(data.auth_date ?? "0");
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (!authDate || nowSec - authDate > maxAgeSec) throw new Error("widget auth_date expired");
-
-  const pairs = Object.entries(data)
-    .filter(([k]) => k !== "hash")
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}=${v}`)
-    .join("\n");
-
-  const secretKey = Buffer.from(sha256Hex(botToken), "hex");
-  const computed = hmacSha256Hex(secretKey, pairs);
-
-  if (!safeEqual(computed, hash)) throw new Error("widget hash mismatch");
-  if (!data.id) throw new Error("widget missing id");
-
-  return {
-    telegram_id: String(data.id),
-    telegram_username: data.username ? String(data.username) : null,
-    first_name: data.first_name ? String(data.first_name) : null,
-    last_name: data.last_name ? String(data.last_name) : null,
-    photo_url: data.photo_url ? String(data.photo_url) : null,
-    auth_date: authDate
-  };
-}
+// Compatibility alias
+export const verifyTelegramWidgetAuth = verifyTelegramWidgetData;
