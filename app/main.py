@@ -1,12 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+
 from app.core.config import settings
 from app.core.db import engine
+from app.core.init_db import ensure_schema
 
 from app.api.routes_auth import router as auth_router
 from app.api.routes_daily import router as daily_router
 from app.api.routes_achievements import router as ach_router
+
 
 app = FastAPI(title=settings.APP_NAME)
 
@@ -22,6 +25,13 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(daily_router)
 app.include_router(ach_router)
+
+
+@app.on_event("startup")
+async def on_startup():
+    # bootstrap schema on clean DB
+    await ensure_schema()
+
 
 @app.get("/healthz")
 async def healthz():
