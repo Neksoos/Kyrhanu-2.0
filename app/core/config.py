@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import secrets
+
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,11 +24,20 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_DAYS: int = 30
 
     # CORS
-    CORS_ALLOW_ORIGINS: str = "http://localhost:5173"
+    # comma-separated
+    # Railway variables used in this project screenshots: CORS_ORIGINS / FRONTEND_ORIGIN
+    CORS_ALLOW_ORIGINS: str = Field(
+        default="http://localhost:5173",
+        validation_alias=AliasChoices("CORS_ALLOW_ORIGINS", "CORS_ORIGINS", "CORS_ORIGIN"),
+    )
     CORS_ALLOW_CREDENTIALS: bool = True
 
     # Telegram
-    TELEGRAM_BOT_TOKEN: str = ""
+    # Railway variable used in this project screenshots: TG_BOT_TOKEN
+    TELEGRAM_BOT_TOKEN: str = Field(
+        default="",
+        validation_alias=AliasChoices("TELEGRAM_BOT_TOKEN", "TG_BOT_TOKEN"),
+    )
     TELEGRAM_WIDGET_BOT_TOKEN: str | None = None
     TELEGRAM_WEBAPP_MAX_AGE_SEC: int = 60 * 60  # 1h
 
@@ -52,6 +64,12 @@ class Settings(BaseSettings):
                 print("[env] JWT_SECRET missing/weak -> generated dev secret. Set JWT_SECRET for stable tokens.")
             if not self.TELEGRAM_BOT_TOKEN:
                 print("[env] TELEGRAM_BOT_TOKEN is empty (dev). Telegram login will not work until you set it.")
+
+        # If Railway provides FRONTEND_ORIGIN but not CORS_ALLOW_ORIGINS, honor it.
+        # Keeps compatibility with older variable naming used in deployment screenshots.
+        frontend_origin = os.getenv("FRONTEND_ORIGIN")
+        if frontend_origin and self.CORS_ALLOW_ORIGINS == "http://localhost:5173":
+            self.CORS_ALLOW_ORIGINS = frontend_origin
 
 
 settings = Settings()
