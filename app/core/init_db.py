@@ -1,3 +1,4 @@
+# app/core/init_db.py
 from __future__ import annotations
 
 from sqlalchemy import text
@@ -12,6 +13,64 @@ CREATE TABLE IF NOT EXISTS schema_bootstrap (
 """
 
 BOOTSTRAP_ID = "001_users_sql"
+
+
+def _split_sql(script: str) -> list[str]:
+    """
+    Split SQL script by ';' but NOT inside single/double quotes.
+    Also strips out -- line comments.
+    Good enough for simple schema .sql (CREATE TABLE, INSERT, etc).
+    """
+    lines = []
+    for line in script.splitlines():
+        # remove -- comments
+        if "--" in line:
+            line = line.split("--", 1)[0]
+        lines.append(line)
+    s = "\n".join(lines)
+
+    statements: list[str] = []
+    buf: list[str] = []
+    in_single = False
+    in_double = False
+
+    i = 0
+    while i < len(s):
+        ch = s[i]
+
+        if ch == "'" and not in_double:
+            # handle escaped '' inside strings
+            if in_single and i + 1 < len(s) and s[i + 1] == "'":
+                buf.append("''")
+                i += 2
+                continue
+            in_single = not in_single
+            buf.append(ch)
+            i += 1
+            continue
+
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            buf.append(ch)
+            i += 1
+            continue
+
+        if ch == ";" and not in_single and not in_double:
+            stmt = "".join(buf).strip()
+            if stmt:
+                statements.append(stmt)
+            buf = []
+            i += 1
+            continue
+
+        buf.append(ch)
+        i += 1
+
+    tail = "".join(buf).strip()
+    if tail:
+        statements.append(tail)
+
+    return statements
 
 
 async def ensure_schema() -> None:
@@ -31,14 +90,12 @@ async def ensure_schema() -> None:
         if already.first():
             return
 
-        # read SQL file from container FS
         with open(sql_path, "r", encoding="utf-8") as f:
             sql_text = f.read()
 
-        # Execute as a whole script
-        # (Postgres driver can handle multiple statements separated by ';' here)
-        # If your platform refuses multi-statement, tell me — I'll change to a safe splitter.
-        await conn.execute(text(sql_text))
+        statements = _split_sql(sql_text)
+        for stmt in statements:
+            await conn.execute(text(stmt))
 
         await conn.execute(
             text("INSERT INTO schema_bootstrap (id) VALUES (:id) ON CONFLICT (id) DO NOTHING"),
