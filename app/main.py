@@ -9,6 +9,11 @@ from app.core.init_db import ensure_schema
 from app.api.routes_auth import router as auth_router
 from app.api.routes_daily import router as daily_router
 from app.api.routes_achievements import router as ach_router
+from app.api.routes_me import router as me_router
+from app.api.routes_runs import router as runs_router
+from app.api.routes_inventory import router as inv_router
+from app.api.routes_shop import router as shop_router
+from app.api.routes_tutorial import router as tutorial_router
 
 
 app = FastAPI(title=settings.APP_NAME)
@@ -36,6 +41,11 @@ else:
 app.include_router(auth_router)
 app.include_router(daily_router)
 app.include_router(ach_router)
+app.include_router(me_router)
+app.include_router(runs_router)
+app.include_router(inv_router)
+app.include_router(shop_router)
+app.include_router(tutorial_router)
 
 
 @app.on_event("startup")

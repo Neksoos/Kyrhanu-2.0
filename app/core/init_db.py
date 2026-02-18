@@ -12,7 +12,10 @@ CREATE TABLE IF NOT EXISTS schema_bootstrap (
 );
 """
 
-BOOTSTRAP_ID = "001_users_sql"
+SCRIPTS: list[tuple[str, str]] = [
+    ("001_users_sql", "app/db/001_users.sql"),
+    ("002_seed_sql", "app/db/002_seed.sql"),
+]
 
 
 def _split_sql(script: str) -> list[str]:
@@ -75,29 +78,32 @@ def _split_sql(script: str) -> list[str]:
 
 async def ensure_schema() -> None:
     """
-    Runs app/db/001_users.sql once (on a clean DB).
+    Runs schema SQL scripts once.
     Uses schema_bootstrap table as a marker.
     """
-    sql_path = "app/db/001_users.sql"
-
     async with engine.begin() as conn:
         await conn.execute(text(MARKER_TABLE_SQL))
 
-        already = await conn.execute(
-            text("SELECT 1 FROM schema_bootstrap WHERE id = :id"),
-            {"id": BOOTSTRAP_ID},
-        )
-        if already.first():
-            return
+        for script_id, sql_path in SCRIPTS:
+            already = await conn.execute(
+                text("SELECT 1 FROM schema_bootstrap WHERE id = :id"),
+                {"id": script_id},
+            )
+            if already.first():
+                continue
 
-        with open(sql_path, "r", encoding="utf-8") as f:
-            sql_text = f.read()
+            try:
+                with open(sql_path, "r", encoding="utf-8") as f:
+                    sql_text = f.read()
+            except FileNotFoundError:
+                # Optional scripts (e.g., seeds) may be absent in some deployments.
+                continue
 
-        statements = _split_sql(sql_text)
-        for stmt in statements:
-            await conn.execute(text(stmt))
+            statements = _split_sql(sql_text)
+            for stmt in statements:
+                await conn.execute(text(stmt))
 
-        await conn.execute(
-            text("INSERT INTO schema_bootstrap (id) VALUES (:id) ON CONFLICT (id) DO NOTHING"),
-            {"id": BOOTSTRAP_ID},
-        )
+            await conn.execute(
+                text("INSERT INTO schema_bootstrap (id) VALUES (:id) ON CONFLICT (id) DO NOTHING"),
+                {"id": script_id},
+            )
