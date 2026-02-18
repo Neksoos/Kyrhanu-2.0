@@ -101,7 +101,8 @@ async def ensure_schema() -> None:
 
             statements = _split_sql(sql_text)
             for stmt in statements:
-                await conn.execute(text(stmt))
+                # Use exec_driver_sql to avoid SQLAlchemy bind-param parsing (':' in JSON, etc.)
+                await conn.exec_driver_sql(stmt)
 
             await conn.execute(
                 text("INSERT INTO schema_bootstrap (id) VALUES (:id) ON CONFLICT (id) DO NOTHING"),
