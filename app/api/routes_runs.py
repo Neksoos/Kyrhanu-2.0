@@ -226,7 +226,9 @@ async def runs_start(
         text(
             """
             INSERT INTO runs (id, user_id, mode, state, created_at)
-            VALUES (:id, :uid, :mode, :state::jsonb, :now)
+            -- IMPORTANT: avoid ':param::jsonb' because SQLAlchemy text() parser won't bind params
+            -- that are immediately followed by ':' (PostgreSQL cast operator '::').
+            VALUES (:id, :uid, :mode, CAST(:state AS jsonb), :now)
             """
         ),
         {"id": str(rid), "uid": user_id, "mode": mode, "state": json.dumps(state), "now": _now()},
@@ -321,7 +323,7 @@ async def runs_choice(
             }
 
     await db.execute(
-        text("UPDATE runs SET state = :state::jsonb WHERE id = :rid"),
+        text("UPDATE runs SET state = CAST(:state AS jsonb) WHERE id = :rid"),
         {"state": json.dumps(state), "rid": run_id},
     )
     await db.commit()
@@ -419,7 +421,7 @@ async def runs_combat_act(
         # if we landed on final with only finish choice, we keep it
 
     await db.execute(
-        text("UPDATE runs SET state = :state::jsonb WHERE id = :rid"),
+        text("UPDATE runs SET state = CAST(:state AS jsonb) WHERE id = :rid"),
         {"state": json.dumps(state), "rid": run_id},
     )
     await db.commit()
@@ -489,7 +491,7 @@ async def _finish_run(db: AsyncSession, user_id: str, run_id: str, state: dict):
         text(
             """
             UPDATE runs
-            SET state = :state::jsonb,
+            SET state = CAST(:state AS jsonb),
                 finished_at = :now
             WHERE id = :rid AND user_id = :uid
             """

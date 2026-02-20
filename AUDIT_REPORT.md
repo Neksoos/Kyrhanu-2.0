@@ -11,6 +11,9 @@ The uploaded **backend** is **Python FastAPI + asyncpg + raw SQL migrations**, n
 2. **Mini App “не бачить користувача”**: initData was not consistently validated + no stable session → intermittent 401/409 loop.
 3. **No browser Telegram Login Widget flow** (signature verify + unified session) → browser users couldn’t login safely.
 4. **Migrations re-applied on every start** (non-idempotent SQL) → breakage risk / data corruption.
+5. **Production crash on startup**: `NameError: Query is not defined` in `routers/forum.py` / `routers/perun.py`.
+6. **500 on `/runs/*` (2.0 API)**: SQLAlchemy `text()` does **not** bind params written as `:param::jsonb` → Postgres syntax error near `:`.
+   Also: repo `requirements.txt` was missing libs used by `/app/*` (SQLAlchemy, jose, passlib).
 
 ### P1 (high impact)
 1. No clear **linking** flow (email/password → later link Telegram id) for unified account.
@@ -55,6 +58,14 @@ Implemented in:
 - `players.password_hash TEXT` (PBKDF2)
 
 This is **additive** and should not break existing rows.
+
+### 2.5 Runtime fixes for current Railway logs
+- Fixed missing imports: added `Query` import where it was used.
+- Fixed SQLAlchemy bind parsing bug by replacing `:state::jsonb` / `:slots::jsonb` with `CAST(:state AS jsonb)` / `CAST(:slots AS jsonb)`.
+- Updated `requirements.txt` to include dependencies used by `/app/*`.
+- Updated `Dockerfile` to support both entrypoints via `APP_MODULE` env:
+  - `APP_MODULE=main:app` (legacy game API with Telegram cookie sessions)
+  - `APP_MODULE=app.main:app` (2.0 API with JWT + runs/shop/inventory)
 
 ## 3) Frontend audit notes (Next.js)
 ### Current auth flow
@@ -121,7 +132,7 @@ pip install -r requirements.txt
 # env (example)
 export DATABASE_URL='postgresql://user:pass@host:5432/db'
 export REDIS_URL='redis://default:pass@host:6379'
-export TELEGRAM_BOT_TOKEN='123:ABC...'   # token for the bot used by Mini App + Login Widget
+export BOT_TOKEN='123:ABC...'           # legacy API token for Mini App + Login Widget
 export BOT_USERNAME='Kyrganubot'         # without @ (prod). For dev: kyrganuosnova_bot
 export FRONTEND_ORIGIN='http://localhost:3000'
 

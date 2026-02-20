@@ -13,13 +13,17 @@ This plan is conservative ("обережно"). Anything destructive is staged b
 ## 2) Auth rollout plan (safe)
 ### 2.1 Environment variables
 Backend:
-- `TELEGRAM_BOT_TOKEN` — token for the bot used by:
+- `BOT_TOKEN` — token for the bot used by the **legacy API** (`APP_MODULE=main:app`) for:
   - Mini App initData verification
   - Browser Login Widget verification
+- `TELEGRAM_BOT_TOKEN` — same idea, but for the **2.0 API** (`APP_MODULE=app.main:app`).
 - `REDIS_URL` — required for cookie sessions
 - `BOT_USERNAME` — used for referral links (without @):
   - dev: `kyrganuosnova_bot`
   - prod: `Kyrganubot`
+- `APP_MODULE` — which FastAPI app to run (Docker/Railway):
+  - `main:app` (legacy game API)
+  - `app.main:app` (2.0 API with JWT + runs/shop/inventory)
 Frontend:
 - `API_BASE` — backend base URL (used by Next.js proxy route)
 - `NEXT_PUBLIC_TG_LOGIN_BOT_USERNAME` — bot username for Telegram Login Widget
@@ -61,10 +65,12 @@ Rollback:
 ## 5) Repo cleanup (safe)
 Already applied:
 - Removed generated `__pycache__` / `*.pyc` from backend package.
-- Removed unused `services/referrals_api.py` (no imports found).
+- Fixed missing FastAPI imports: `Query` in `routers/forum.py` and `routers/perun.py`.
+- Fixed SQLAlchemy bind bug in `/app/*` routes by replacing `:param::jsonb` with `CAST(:param AS jsonb)`.
+- Updated `requirements.txt` to include libs used by `/app/*`.
+- Updated `Dockerfile` to support switching entrypoint via `APP_MODULE`.
 
 Recommended next (manual review):
-- Remove unused frontend component `app/_components/AuthGate.tsx` (no imports).
 - Add lint/format scripts and enforce in CI.
 - Add rate limiter to backend for auth endpoints.
 

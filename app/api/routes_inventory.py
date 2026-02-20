@@ -109,8 +109,10 @@ async def inventory_equip(
     slots = dict(slots or {})
     slots[slot] = str(item_instance_id)
 
+    # NOTE: SQLAlchemy's text() parser intentionally avoids bind params directly followed by ':'
+    # (to not confuse with PostgreSQL '::' casts). Use CAST(:param AS jsonb) instead of :param::jsonb.
     await db.execute(
-        text("UPDATE equipment SET slots = :slots::jsonb WHERE user_id = :uid"),
+        text("UPDATE equipment SET slots = CAST(:slots AS jsonb) WHERE user_id = :uid"),
         {"slots": json.dumps(slots), "uid": user_id},
     )
     await db.commit()
@@ -146,7 +148,7 @@ async def inventory_unequip(
         slots.pop(slot)
 
     await db.execute(
-        text("UPDATE equipment SET slots = :slots::jsonb WHERE user_id = :uid"),
+        text("UPDATE equipment SET slots = CAST(:slots AS jsonb) WHERE user_id = :uid"),
         {"slots": json.dumps(slots), "uid": user_id},
     )
     await db.commit()
