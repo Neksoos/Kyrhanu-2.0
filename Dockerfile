@@ -1,17 +1,20 @@
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# Оптимальні змінні середовища
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gcc curl \
- && rm -rf /var/lib/apt/lists/*
+# Копіюємо requirements і встановлюємо залежності
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Копіюємо весь код
+COPY . .
 
-COPY app /app/app
+# Щоб Python бачив локальні імпорти (routers, services і т.д.)
+ENV PYTHONPATH=/app
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*' --access-log"]
+# Запуск: слухаємо PORT від Railway (fallback 8080 локально)
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
