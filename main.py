@@ -20,6 +20,13 @@ from app.api.routes_inventory import router as inv_router
 from app.api.routes_shop import router as shop_router
 from app.api.routes_tutorial import router as tutorial_router
 
+from routers.professions import router as professions_router
+from routers.alchemy import router as alchemy_router
+from routers.blacksmith import router as blacksmith_router
+from routers.craft import router as craft_router
+from routers.items import router as items_router, router_public as items_router_public
+from routers.craft_materials import router as craft_materials_router, router_public as craft_materials_router_public
+
 
 app = FastAPI(title=settings.APP_NAME)
 
@@ -52,6 +59,16 @@ app.include_router(runs_router)
 app.include_router(inv_router)
 app.include_router(shop_router)
 app.include_router(tutorial_router)
+
+# --- Profession/craft routers (legacy + mini-app) ---
+app.include_router(professions_router)
+app.include_router(alchemy_router)
+app.include_router(blacksmith_router)
+app.include_router(craft_router)
+app.include_router(items_router)
+app.include_router(items_router_public)
+app.include_router(craft_materials_router)
+app.include_router(craft_materials_router_public)
 
 # ------------------------------
 # Default / health

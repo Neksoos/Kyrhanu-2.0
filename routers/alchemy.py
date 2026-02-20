@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from db import get_pool
 from services.inventory.service import give_item_to_player  # ✅ FIX: правильний імпорт
+from services.profession_progress import add_prof_xp
 
 router = APIRouter(prefix="/api/alchemy", tags=["alchemy"])
 
@@ -442,6 +443,13 @@ async def list_recipes():
     async with pool.acquire() as conn:
         return await _load_all_recipes_with_ingredients(conn)
 
+@router.get("/recipes/list")
+async def list_recipes_wrapped():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        recipes = await _load_all_recipes_with_ingredients(conn)
+    return {"ok": True, "recipes": [r.model_dump() for r in recipes]}
+
 
 @router.get("/recipes/status", response_model=List[RecipeStatusDTO])
 async def recipes_status(tg_id: int = Query(..., gt=0)):
@@ -576,6 +584,16 @@ async def claim(queue_id: int, tg_id: int = Query(..., gt=0)):
                 queue_id, tg_id
             )
 
+    xp_gain = 0
+    prof_state = None
+
+    async with pool.acquire() as conn_xp:
+        async with conn_xp.transaction():
+            recipe_row = await conn_xp.fetchrow("SELECT level_req FROM alchemy_recipes WHERE code=$1", str(q["recipe_code"]))
+            lvl_req = int((recipe_row or {}).get("level_req", 1) if recipe_row else 1)
+            xp_gain = (12 + lvl_req * 7) * max(1, out_amount)
+            prof_state = await add_prof_xp(conn_xp, tg_id, "alchemist", xp_gain)
+
     # ⚠️ видачу робимо ПІСЛЯ транзакції
     await give_item_to_player(
         tg_id=tg_id,
@@ -590,7 +608,7 @@ async def claim(queue_id: int, tg_id: int = Query(..., gt=0)):
         slot=item["slot"],
     )
 
-    return {"ok": True, "item_code": str(item["code"]), "amount": out_amount}
+    return {"ok": True, "item_code": str(item["code"]), "amount": out_amount, "xp_gained": xp_gain, "profession": {"code": "alchemist", "level": prof_state.level if prof_state else 1, "xp": prof_state.xp if prof_state else 0, "xp_to_next": prof_state.xp_to_next if prof_state else None}}
 
 
 # ─────────────────────────────────────────────

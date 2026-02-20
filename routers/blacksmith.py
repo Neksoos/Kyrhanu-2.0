@@ -19,6 +19,7 @@ from services.inventory.migrations import (
 
 # ✅ achievements (метрики)
 from services.achievements.metrics import inc_metric  # type: ignore
+from services.profession_progress import add_prof_xp
 
 router = APIRouter(prefix="/api/blacksmith", tags=["blacksmith"])
 
@@ -101,6 +102,9 @@ class ForgeClaimResponse(BaseModel):
     ok: bool = True
     item_code: str
     amount: int
+    xp_gained: int = 0
+    profession_level: int | None = None
+    profession_xp: int | None = None
 
 
 class ForgeCancelBody(BaseModel):
@@ -820,6 +824,12 @@ async def smelt_start(tg_id: int, body: SmeltStartBody) -> SmeltStartResponse:
             slot=item_meta.get("slot"),
         )
 
+    xp_gain = 10
+    async with pool.acquire() as conn_xp:
+        async with conn_xp.transaction():
+            xp_gain = 8 + max(1, amount) * 5
+            await add_prof_xp(conn_xp, tg_id, "blacksmith", xp_gain)
+
     try:
         await inc_metric(tg_id, "smelt_blacksmith_count", 1)
     except Exception:
@@ -1151,9 +1161,24 @@ async def forge_claim(tg_id: int, body: ForgeClaimBody) -> ForgeClaimResponse:
         slot=meta["slot"],
     )
 
+    xp_gain = 0
+    prof_state = None
+    async with pool.acquire() as conn_xp:
+        async with conn_xp.transaction():
+            lvl_req = int((await conn_xp.fetchval("SELECT level_req FROM blacksmith_recipes WHERE code=$1", body.recipe_code)) or 1)
+            xp_gain = (16 + lvl_req * 8) * max(1, amount)
+            prof_state = await add_prof_xp(conn_xp, tg_id, "blacksmith", xp_gain)
+
     try:
         await inc_metric(tg_id, "craft_blacksmith_count", 1)
     except Exception:
         logger.exception("blacksmith: inc_metric craft_blacksmith_count FAILED tg_id={}", tg_id)
 
-    return ForgeClaimResponse(ok=True, item_code=item_code, amount=amount)
+    return ForgeClaimResponse(
+        ok=True,
+        item_code=item_code,
+        amount=amount,
+        xp_gained=xp_gain,
+        profession_level=(prof_state.level if prof_state else None),
+        profession_xp=(prof_state.xp if prof_state else None),
+    )
