@@ -1,3 +1,4 @@
+# requirements.txt
 fastapi==0.115.0
 uvicorn[standard]==0.31.0
 asyncpg==0.29.0
@@ -7,6 +8,9 @@ python-dotenv==1.0.1
 loguru==0.7.2
 pydantic-settings>=2.2.0
 httpx==0.28.1
+
+# ✅ потрібен для pydantic EmailStr (інакше падає з "email-validator is not installed")
+email-validator==2.2.0
 
 # Needed by /app/* (JWT auth, SQLAlchemy async engine)
 SQLAlchemy==2.0.36
