@@ -1,29 +1,31 @@
-# app/main.py
-import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import text, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import engine
 from app.core.init_db import ensure_schema
 
-# ✅ V2 (JWT) routers — НЕ ламаємо, але ховаємо під /v2 щоб не конфліктували з LEGACY /api/*
-from app.api.routes_auth import router as v2_auth_router
-from app.api.routes_daily import router as v2_daily_router
-from app.api.routes_achievements import router as v2_ach_router
-from app.api.routes_me import router as v2_me_router
-from app.api.routes_runs import router as v2_runs_router
-from app.api.routes_inventory import router as v2_inv_router
-from app.api.routes_shop import router as v2_shop_router
-from app.api.routes_tutorial import router as v2_tutorial_router
+from app.api.deps import get_db, get_current_user_id
+from app.models.user import User
+from app.models.wallet import Wallet
 
-app = FastAPI(title=getattr(settings, "APP_NAME", "Kyrhanu"))
+from app.api.routes_auth import router as auth_router
+from app.api.routes_daily import router as daily_router
+from app.api.routes_achievements import router as ach_router
+from app.api.routes_me import router as me_router
+from app.api.routes_runs import router as runs_router
+from app.api.routes_inventory import router as inv_router
+from app.api.routes_shop import router as shop_router
+from app.api.routes_tutorial import router as tutorial_router
 
-# ✅ CORS: Telegram WebView + браузер
-origins_raw = (getattr(settings, "CORS_ALLOW_ORIGINS", "") or "").strip()
-origins = [o.strip() for o in origins_raw.split(",") if o.strip()]
 
+app = FastAPI(title=settings.APP_NAME)
+
+origins = [o.strip() for o in settings.CORS_ALLOW_ORIGINS.split(",") if o.strip()]
+
+# If CORS_ALLOW_ORIGINS is empty or "*", allow any origin (Telegram WebView + Railway previews).
 if not origins or origins == ["*"]:
     app.add_middleware(
         CORSMiddleware,
@@ -41,93 +43,30 @@ else:
         allow_headers=["*"],
     )
 
-# ✅ щоб не було {"detail":"Not Found"} на /
+# --- Main routers ---
+app.include_router(auth_router)
+app.include_router(daily_router)
+app.include_router(ach_router)
+app.include_router(me_router)
+app.include_router(runs_router)
+app.include_router(inv_router)
+app.include_router(shop_router)
+app.include_router(tutorial_router)
+
+# ------------------------------
+# Default / health
+# ------------------------------
 @app.get("/", tags=["default"])
 def root():
-    return {"ok": True, "service": "kyrhanu-backend"}
+    return {"ok": True, "service": "cursed-kurgans"}
 
-# ✅ простий пінг (для перевірки що деплой взяв код)
+
 @app.get("/_ping", tags=["default"])
 def ping():
     return {"ok": True}
 
-# ─────────────────────────────────────────────────────────────
-# ✅ LEGACY /api/* — головне для твого фронта
-# Підключаємо “routers/*” (Telegram initData / X-Init-Data)
-# ─────────────────────────────────────────────────────────────
-_legacy_import_error = None
 
-try:
-    # Основні legacy endpoints
-    from routers.auth import router as legacy_auth_router
-    from routers.profile import router as legacy_profile_router
-    from routers.city_entry import router as legacy_city_entry_router
-    from routers.npc_router import router as legacy_npc_router
-
-    from routers.professions import router as legacy_professions_router
-    from routers.materials import router as legacy_materials_router
-    from routers.inventory import router as legacy_inventory_router
-
-    # Існуючі системи крафту
-    from routers.alchemy import router as legacy_alchemy_router
-    from routers.blacksmith import router as legacy_blacksmith_router
-
-    # Якщо ти вже додав craft hub (як ми планували)
-    try:
-        from routers.craft import router as legacy_craft_router
-    except Exception:
-        legacy_craft_router = None  # type: ignore
-
-    # Підключаємо все як є: ці routers вже мають свої prefix (/api/...)
-    app.include_router(legacy_auth_router)
-    app.include_router(legacy_profile_router)
-    app.include_router(legacy_city_entry_router)
-    app.include_router(legacy_npc_router)
-
-    app.include_router(legacy_professions_router)
-    app.include_router(legacy_materials_router)
-    app.include_router(legacy_inventory_router)
-
-    app.include_router(legacy_alchemy_router)
-    app.include_router(legacy_blacksmith_router)
-
-    if legacy_craft_router is not None:
-        app.include_router(legacy_craft_router)
-
-except Exception as e:
-    # Не валимо сервіс, щоб було видно причину через endpoint нижче
-    _legacy_import_error = str(e)
-
-
-@app.get("/__legacy_error", tags=["debug"])
-def legacy_error():
-    """
-    Якщо тут ok=false — значить в контейнері не підтягуються legacy routers
-    (наприклад, немає папки routers/ або конфлікт імпортів).
-    """
-    return {"ok": _legacy_import_error is None, "error": _legacy_import_error}
-
-
-# ─────────────────────────────────────────────────────────────
-# ✅ V2 API (JWT) — під /v2 щоб не конфліктувати з /api/*
-# ─────────────────────────────────────────────────────────────
-app.include_router(v2_auth_router, prefix="/v2")
-app.include_router(v2_daily_router, prefix="/v2")
-app.include_router(v2_ach_router, prefix="/v2")
-app.include_router(v2_me_router, prefix="/v2")
-app.include_router(v2_runs_router, prefix="/v2")
-app.include_router(v2_inv_router, prefix="/v2")
-app.include_router(v2_shop_router, prefix="/v2")
-app.include_router(v2_tutorial_router, prefix="/v2")
-
-
-@app.on_event("startup")
-async def on_startup():
-    # v2 schema init (не заважає legacy)
-    await ensure_schema()
-
-
-@app.get("/healthz")
+@app.get("/healthz", tags=["default"])
 async def healthz():
     db_ok = True
     try:
@@ -136,3 +75,65 @@ async def healthz():
     except Exception:
         db_ok = False
     return {"ok": True, "dbOk": db_ok}
+
+
+@app.on_event("startup")
+async def on_startup():
+    await ensure_schema()
+
+
+# ------------------------------
+# Legacy /api/* compatibility
+# (старі фронти: /api/profile, /api/city-entry, /api/npc/spawn)
+# ------------------------------
+@app.get("/api/profile", tags=["legacy"])
+async def legacy_profile(
+    db: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Compatibility alias for older frontend builds.
+    Expected by: /api/proxy/api/profile
+    """
+    u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    w = await db.get(Wallet, user_id)
+
+    return {
+        "ok": True,
+        "user": {
+            "id": str(getattr(u, "id", user_id)),
+            "email": getattr(u, "email", None),
+            "telegram_id": getattr(u, "telegram_id", None),
+            "telegram_username": getattr(u, "telegram_username", None),
+        },
+        "wallet": {
+            "chervontsi": int(getattr(w, "chervontsi", 0) or 0),
+            "kleidony": int(getattr(w, "kleidony", 0) or 0),
+        },
+    }
+
+
+@app.get("/api/city-entry", tags=["legacy"])
+async def legacy_city_entry(user_id: str = Depends(get_current_user_id)):
+    """
+    Stop-gap endpoint to prevent 404s for older clients.
+    Expected by: /api/proxy/api/city-entry
+    """
+    return {"ok": True, "user_id": str(user_id)}
+
+
+@app.post("/api/npc/spawn", tags=["legacy"])
+async def legacy_npc_spawn(user_id: str = Depends(get_current_user_id)):
+    """
+    Старий фронт викликає POST /api/npc/spawn (через /api/proxy).
+    Тут мінімальний "заглушковий" респонс, щоб не валити гру 404-кою.
+
+    IMPORTANT:
+    - Ми повертаємо валідний JSON з ok=true.
+    - Формат робимо максимально нейтральним: список NPC може бути пустим.
+    """
+    return {
+        "ok": True,
+        "user_id": str(user_id),
+        "npcs": [],  # можна наповнити пізніше, зараз головне прибрати 404
+    }
