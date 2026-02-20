@@ -1,30 +1,31 @@
 # app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
 
 from app.core.config import settings
-from app.core.db import engine
-from app.core.init_db import ensure_schema
 
-from app.api.routes_auth import router as auth_router
-from app.api.routes_daily import router as daily_router
-from app.api.routes_achievements import router as ach_router
-from app.api.routes_me import router as me_router
-from app.api.routes_runs import router as runs_router
-from app.api.routes_inventory import router as inv_router
-from app.api.routes_shop import router as shop_router
-from app.api.routes_tutorial import router as tutorial_router
+# ✅ Legacy game API (те, що зараз кличе фронт: /api/...)
+from routers.auth import router as legacy_auth_router
+from routers.profile import router as legacy_profile_router
+from routers.city_entry import router as legacy_city_entry_router
+from routers.npc_router import router as legacy_npc_router
 
-# ✅ NPC router (travelling NPC spawn/encounter)
-from routers.npc_router import router as npc_router
+# ✅ V2 API (JWT) — щоб не зміішувати з legacy, відносимо на /v2/...
+from app.api.routes_auth import router as v2_auth_router
+from app.api.routes_daily import router as v2_daily_router
+from app.api.routes_achievements import router as v2_ach_router
+from app.api.routes_me import router as v2_me_router
+from app.api.routes_runs import router as v2_runs_router
+from app.api.routes_inventory import router as v2_inv_router
+from app.api.routes_shop import router as v2_shop_router
+from app.api.routes_tutorial import router as v2_tutorial_router
 
+app = FastAPI(title=getattr(settings, "APP_NAME", "Kyrhanu API"))
 
-app = FastAPI(title=settings.APP_NAME)
+# ✅ CORS: Telegram WebView + браузер
+origins_raw = getattr(settings, "CORS_ALLOW_ORIGINS", "") or ""
+origins = [o.strip() for o in origins_raw.split(",") if o.strip()]
 
-origins = [o.strip() for o in settings.CORS_ALLOW_ORIGINS.split(",") if o.strip()]
-
-# If CORS_ALLOW_ORIGINS is empty or "*", allow any origin (Telegram WebView + Railway previews).
 if not origins or origins == ["*"]:
     app.add_middleware(
         CORSMiddleware,
@@ -42,30 +43,30 @@ else:
         allow_headers=["*"],
     )
 
-app.include_router(auth_router)
-app.include_router(daily_router)
-app.include_router(ach_router)
-app.include_router(me_router)
-app.include_router(runs_router)
-app.include_router(inv_router)
-app.include_router(shop_router)
-app.include_router(tutorial_router)
+# ─────────────────────────────────────────────────────────────
+# ✅ LEGACY API (саме це потрібно для гри зараз)
+#    /api/profile
+#    /api/city-entry
+#    /api/npc/spawn
+# ─────────────────────────────────────────────────────────────
+app.include_router(legacy_auth_router)
+app.include_router(legacy_profile_router)
+app.include_router(legacy_city_entry_router)
+app.include_router(legacy_npc_router)
 
-# ✅ add NPC endpoints: /api/npc/spawn, /api/npc/{npc_key}/encounter, etc.
-app.include_router(npc_router)
-
-
-@app.on_event("startup")
-async def on_startup():
-    await ensure_schema()
+# ─────────────────────────────────────────────────────────────
+# ✅ V2 API (JWT) — із префіксом /v2
+# ─────────────────────────────────────────────────────────────
+app.include_router(v2_auth_router, prefix="/v2")
+app.include_router(v2_daily_router, prefix="/v2")
+app.include_router(v2_ach_router, prefix="/v2")
+app.include_router(v2_me_router, prefix="/v2")
+app.include_router(v2_runs_router, prefix="/v2")
+app.include_router(v2_inv_router, prefix="/v2")
+app.include_router(v2_shop_router, prefix="/v2")
+app.include_router(v2_tutorial_router, prefix="/v2")
 
 
 @app.get("/healthz")
 async def healthz():
-    db_ok = True
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        db_ok = False
-    return {"ok": True, "dbOk": db_ok}
+    return {"ok": True}
