@@ -1,5 +1,6 @@
 # app/main.py
 import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -8,7 +9,7 @@ from app.core.config import settings
 from app.core.db import engine
 from app.core.init_db import ensure_schema
 
-# ✅ V2 API
+# ✅ V2 API (те, що зараз видно в Swagger)
 from app.api.routes_auth import router as v2_auth_router
 from app.api.routes_daily import router as v2_daily_router
 from app.api.routes_achievements import router as v2_ach_router
@@ -20,9 +21,10 @@ from app.api.routes_tutorial import router as v2_tutorial_router
 
 app = FastAPI(title=getattr(settings, "APP_NAME", "Cursed Kurgans"))
 
-# ✅ CORS
+# ✅ CORS для Telegram WebView + браузера
 origins_raw = (getattr(settings, "CORS_ALLOW_ORIGINS", "") or "").strip()
 origins = [o.strip() for o in origins_raw.split(",") if o.strip()]
+
 if not origins or origins == ["*"]:
     app.add_middleware(
         CORSMiddleware,
@@ -40,28 +42,36 @@ else:
         allow_headers=["*"],
     )
 
+# ✅ Контрольний роут: щоб не бачити Not Found на /
 @app.get("/")
 async def root():
     return {"ok": True, "service": "cursed-kurgans-backend"}
 
-# ✅ Діагностика: покаже, чи Railway реально взяв новий код/коміт
+# ✅ Контрольний роут: якщо це 404 — Railway не взяв твій новий код
+@app.get("/__ping")
+async def __ping():
+    return {"ok": True, "msg": "NEW CODE IS LIVE"}
+
+# ✅ Діагностика: який коміт/модуль реально запущений
 @app.get("/__version")
-async def version():
+async def __version():
     return {
         "ok": True,
         "service": "cursed-kurgans-backend",
-        "railway_revision": os.getenv("RAILWAY_GIT_COMMIT_SHA")
-            or os.getenv("RAILWAY_GIT_COMMIT")
-            or os.getenv("GIT_COMMIT")
-            or "unknown",
+        "railway_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA")
+        or os.getenv("RAILWAY_GIT_COMMIT")
+        or os.getenv("GIT_COMMIT")
+        or "unknown",
         "app_module": os.getenv("APP_MODULE", "not_set"),
-        "has_legacy_expected": "routers" in os.listdir("/app") if os.path.exists("/app") else False,
+        "cwd": os.getcwd(),
+        "has_routers_dir": os.path.isdir("routers"),
+        "has_app_dir": os.path.isdir("app"),
     }
 
-# ─────────────────────────────
-# ✅ Спроба підключити legacy routers
-# (якщо папка routers є в контейнері)
-# ─────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# ✅ LEGACY game API (потрібно фронту): /api/profile /api/city-entry /api/npc/spawn
+# ─────────────────────────────────────────────────────────────
+_legacy_import_error = None
 try:
     from routers.auth import router as legacy_auth_router
     from routers.profile import router as legacy_profile_router
@@ -73,12 +83,16 @@ try:
     app.include_router(legacy_city_entry_router)
     app.include_router(legacy_npc_router)
 except Exception as e:
-    # якщо routers нема в image — не валимо сервіс, але це видно в /__version (і по відсутності шляхів)
-    @app.get("/__legacy_error")
-    async def legacy_error():
-        return {"ok": False, "error": str(e)}
+    _legacy_import_error = str(e)
 
-# ✅ V2 routes (як було)
+@app.get("/__legacy_error")
+async def __legacy_error():
+    # Якщо None — значить legacy підключилось.
+    return {"ok": _legacy_import_error is None, "error": _legacy_import_error}
+
+# ─────────────────────────────────────────────────────────────
+# ✅ V2 endpoints (JWT) — як було
+# ─────────────────────────────────────────────────────────────
 app.include_router(v2_auth_router)
 app.include_router(v2_daily_router)
 app.include_router(v2_ach_router)
