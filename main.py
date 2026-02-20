@@ -17,15 +17,15 @@ from app.api.routes_inventory import router as inv_router
 from app.api.routes_shop import router as shop_router
 from app.api.routes_tutorial import router as tutorial_router
 
-# ✅ LEGACY routers (це і є /api/profile /api/city-entry /api/npc/spawn)
+# ✅ LEGACY game API (це кличе фронт: /api/profile, /api/city-entry, /api/npc/spawn)
 from routers.auth import router as legacy_auth_router
 from routers.profile import router as legacy_profile_router
 from routers.city_entry import router as legacy_city_entry_router
 from routers.npc_router import router as legacy_npc_router
 
-app = FastAPI(title=settings.APP_NAME)
+app = FastAPI(title=getattr(settings, "APP_NAME", "Kyrhanu API"))
 
-origins = [o.strip() for o in (settings.CORS_ALLOW_ORIGINS or "").split(",") if o.strip()]
+origins = [o.strip() for o in (getattr(settings, "CORS_ALLOW_ORIGINS", "") or "").split(",") if o.strip()]
 
 if not origins or origins == ["*"]:
     app.add_middleware(
@@ -44,13 +44,18 @@ else:
         allow_headers=["*"],
     )
 
-# ✅ ПІДКЛЮЧАЄМО LEGACY (ФІКС 404)
+# ✅ root для швидкої перевірки в браузері (щоб не бачити Not Found на головній)
+@app.get("/")
+async def root():
+    return {"ok": True, "service": "kyrhanu-backend"}
+
+# ✅ підключаємо LEGACY (фікс 404)
 app.include_router(legacy_auth_router)
 app.include_router(legacy_profile_router)
 app.include_router(legacy_city_entry_router)
 app.include_router(legacy_npc_router)
 
-# ✅ V2 (як було)
+# ✅ V2 як було
 app.include_router(auth_router)
 app.include_router(daily_router)
 app.include_router(ach_router)
@@ -60,11 +65,9 @@ app.include_router(inv_router)
 app.include_router(shop_router)
 app.include_router(tutorial_router)
 
-
 @app.on_event("startup")
 async def on_startup():
     await ensure_schema()
-
 
 @app.get("/healthz")
 async def healthz():
