@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class Mob(BaseModel):
@@ -20,9 +20,8 @@ class Mob(BaseModel):
 
     atk_legacy: Optional[int] = Field(None, alias="atk")
 
-    class Config:
-        allow_population_by_field_name = True
-        extra = "allow"
+    # Pydantic v2
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
 
 
 class Hero(BaseModel):
@@ -44,9 +43,8 @@ class Hero(BaseModel):
     energy: int
     energy_max: int
 
-    class Config:
-        allow_population_by_field_name = True
-        extra = "allow"
+    # Pydantic v2
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
 
 
 class BattleDTO(BaseModel):
