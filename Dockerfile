@@ -1,27 +1,23 @@
 FROM python:3.12-slim
 
-# Оптимальні змінні середовища
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Копіюємо requirements і встановлюємо залежності
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential gcc curl \
+  && rm -rf /var/lib/apt/lists/*
 
-# Копіюємо весь код
-COPY . .
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Щоб Python бачив локальні імпорти (routers, services і т.д.)
-ENV PYTHONPATH=/app
+# ✅ ВАЖЛИВО: копіюємо і app, і routers, і root main.py (якщо треба)
+COPY app /app/app
+COPY routers /app/routers
+COPY main.py /app/main.py
 
-# Which ASGI app to run.
-# - app.main:app (2.0 API with JWT + runs/shop/inventory)  ✅ default
-# - main:app (legacy game API with Telegram cookie sessions)
-#
-# Railway / Docker can override this env var when needed.
-ENV APP_MODULE=app.main:app
+EXPOSE 8000
 
-# Запуск: слухаємо PORT від Railway (fallback 8080 локально)
-CMD ["sh", "-c", "uvicorn ${APP_MODULE} --host 0.0.0.0 --port ${PORT:-8080}"]
+# ✅ Railway дає PORT змінною, тому беремо його
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
