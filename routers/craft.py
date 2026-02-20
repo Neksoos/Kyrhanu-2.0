@@ -1,38 +1,65 @@
-# routers/craft.py
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from typing import List, Dict
 from db import get_pool
 from routers.auth import get_tg_id
 
 router = APIRouter(prefix="/api/craft", tags=["craft"])
 
+MAX_LEVEL = 20
 
-# ─────────────────────────────────────
-# DTO
-# ─────────────────────────────────────
+
 class CraftRequest(BaseModel):
     recipe_code: str
     qty: int = 1
 
 
 # ─────────────────────────────────────
-# HELPERS
+# XP логіка
 # ─────────────────────────────────────
-async def _get_player(tg_id: int):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        return await conn.fetchrow(
-            "SELECT id FROM players WHERE tg_id=$1",
-            tg_id
-        )
+def xp_to_next(level: int) -> int:
+    return 100 + (level - 1) * 75
+
+
+async def add_xp(conn, player_id: int, profession_code: str, xp_gain: int):
+    prof = await conn.fetchrow(
+        """
+        SELECT pp.level, pp.xp, pp.profession_id
+        FROM player_professions pp
+        JOIN professions p ON p.id = pp.profession_id
+        WHERE pp.player_id=$1 AND p.code=$2
+        """,
+        player_id,
+        profession_code
+    )
+
+    if not prof:
+        raise HTTPException(400, "Profession not learned")
+
+    level = prof["level"]
+    xp = prof["xp"] + xp_gain
+
+    while level < MAX_LEVEL and xp >= xp_to_next(level):
+        xp -= xp_to_next(level)
+        level += 1
+
+    await conn.execute(
+        """
+        UPDATE player_professions
+        SET level=$1, xp=$2
+        WHERE player_id=$3 AND profession_id=$4
+        """,
+        level,
+        xp,
+        player_id,
+        prof["profession_id"]
+    )
 
 
 # ─────────────────────────────────────
-# GET professions overview
+# LIST PROFESSIONS
 # ─────────────────────────────────────
 @router.get("/professions")
-async def craft_professions(tg_id: int = Depends(get_tg_id)):
+async def list_my_professions(tg_id: int = Depends(get_tg_id)):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -47,24 +74,25 @@ async def craft_professions(tg_id: int = Depends(get_tg_id)):
             tg_id
         )
 
-    return {
-        "ok": True,
-        "professions": [
-            dict(r) for r in rows
-        ]
-    }
+    return {"ok": True, "professions": [dict(r) for r in rows]}
 
 
 # ─────────────────────────────────────
-# GET recipes
+# LIST RECIPES
 # ─────────────────────────────────────
 @router.get("/recipes")
-async def get_recipes(profession: str):
+async def list_recipes(profession: str):
+    if profession == "alchemist":
+        return {
+            "ok": True,
+            "redirect": "/api/alchemy/recipes"
+        }
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT code, name, descr, energy_cost
+            SELECT *
             FROM craft_recipes
             WHERE profession_code=$1
             ORDER BY level_required
@@ -76,27 +104,51 @@ async def get_recipes(profession: str):
 
 
 # ─────────────────────────────────────
-# POST craft
+# CRAFT
 # ─────────────────────────────────────
 @router.post("/craft")
 async def craft(payload: CraftRequest, tg_id: int = Depends(get_tg_id)):
-    player = await _get_player(tg_id)
-    if not player:
-        raise HTTPException(404, "Player not found")
-
     pool = await get_pool()
 
     async with pool.acquire() as conn:
+        player = await conn.fetchrow(
+            "SELECT id, energy FROM players WHERE tg_id=$1",
+            tg_id
+        )
+        if not player:
+            raise HTTPException(404, "Player not found")
+
         recipe = await conn.fetchrow(
-            """
-            SELECT *
-            FROM craft_recipes
-            WHERE code=$1
-            """,
+            "SELECT * FROM craft_recipes WHERE code=$1",
             payload.recipe_code
         )
         if not recipe:
             raise HTTPException(404, "Recipe not found")
+
+        profession_code = recipe["profession_code"]
+
+        prof = await conn.fetchrow(
+            """
+            SELECT pp.level
+            FROM player_professions pp
+            JOIN professions p ON p.id = pp.profession_id
+            WHERE pp.player_id=$1 AND p.code=$2
+            """,
+            player["id"],
+            profession_code
+        )
+
+        if not prof:
+            raise HTTPException(400, "Profession not learned")
+
+        if prof["level"] < recipe["level_required"]:
+            raise HTTPException(400, "Profession level too low")
+
+        energy_cost = recipe["energy_cost"] + recipe["level_required"] * 2
+        total_energy = energy_cost * payload.qty
+
+        if player["energy"] < total_energy:
+            raise HTTPException(400, "Not enough energy")
 
         ingredients = await conn.fetch(
             """
@@ -108,6 +160,7 @@ async def craft(payload: CraftRequest, tg_id: int = Depends(get_tg_id)):
         )
 
         async with conn.transaction():
+
             # перевірка матеріалів
             for ing in ingredients:
                 have = await conn.fetchval(
@@ -122,7 +175,7 @@ async def craft(payload: CraftRequest, tg_id: int = Depends(get_tg_id)):
                 if not have or have < ing["qty"] * payload.qty:
                     raise HTTPException(400, "Not enough materials")
 
-            # списання
+            # списання матеріалів
             for ing in ingredients:
                 await conn.execute(
                     """
@@ -134,6 +187,17 @@ async def craft(payload: CraftRequest, tg_id: int = Depends(get_tg_id)):
                     player["id"],
                     ing["item_code"]
                 )
+
+            # списання енергії
+            await conn.execute(
+                """
+                UPDATE players
+                SET energy = energy - $1
+                WHERE id=$2
+                """,
+                total_energy,
+                player["id"]
+            )
 
             # видача предмета
             await conn.execute(
@@ -148,4 +212,11 @@ async def craft(payload: CraftRequest, tg_id: int = Depends(get_tg_id)):
                 recipe["result_qty"] * payload.qty
             )
 
-    return {"ok": True, "crafted": recipe["result_item_code"]}
+            xp_gain = recipe["level_required"] * 20 * payload.qty
+            await add_xp(conn, player["id"], profession_code, xp_gain)
+
+    return {
+        "ok": True,
+        "crafted": recipe["result_item_code"],
+        "xp_gained": xp_gain
+    }
