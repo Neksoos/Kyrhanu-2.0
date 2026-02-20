@@ -1,4 +1,4 @@
-# app/main.py
+# main.py  (в корені репозиторію Kyrhanu-2.0)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -24,13 +24,13 @@ from app.api.routes_tutorial import router as tutorial_router
 from routers.profile import router as legacy_profile_router
 from routers.city_entry import router as legacy_city_entry_router
 from routers.npc_router import router as legacy_npc_router
-from routers.auth import router as legacy_auth_router  # якщо є /api/auth/*
+from routers.auth import router as legacy_auth_router
 
-app = FastAPI(title=settings.APP_NAME)
+app = FastAPI(title=getattr(settings, "APP_NAME", "Kyrhanu API"))
 
-origins = [o.strip() for o in (settings.CORS_ALLOW_ORIGINS or "").split(",") if o.strip()]
+origins_raw = getattr(settings, "CORS_ALLOW_ORIGINS", "") or ""
+origins = [o.strip() for o in origins_raw.split(",") if o.strip()]
 
-# If CORS_ALLOW_ORIGINS is empty or "*", allow any origin (Telegram WebView + Railway previews).
 if not origins or origins == ["*"]:
     app.add_middleware(
         CORSMiddleware,
@@ -71,7 +71,6 @@ app.include_router(tutorial_router)
 
 @app.on_event("startup")
 async def on_startup():
-    # v2 schema init (не заважає legacy)
     await ensure_schema()
 
 
