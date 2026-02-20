@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,7 +7,8 @@ from app.core.config import settings
 from app.core.db import engine
 from app.core.init_db import ensure_schema
 
-from app.api.deps import get_db, get_current_user_id
+from app.api.deps import get_db
+from jose import JWTError, jwt
 from app.models.user import User
 from app.models.wallet import Wallet
 
@@ -29,6 +30,30 @@ from routers.craft_materials import router as craft_materials_router, router_pub
 
 
 app = FastAPI(title=settings.APP_NAME)
+
+
+def get_optional_user_id(request: Request) -> str | None:
+    """Best-effort user extraction for legacy compatibility routes.
+
+    Older web clients may call `/api/profile`, `/api/city-entry`, `/api/npc/spawn`
+    without Authorization headers while bootstrapping. Returning 401 in this phase
+    creates noisy logs and breaks initial loading. For those compatibility routes we
+    decode bearer JWT if present, otherwise continue as anonymous.
+    """
+    auth = (request.headers.get("authorization") or "").strip()
+    if not auth.lower().startswith("bearer "):
+        return None
+
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return None
+
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALG])
+        sub = payload.get("sub")
+        return str(sub) if sub else None
+    except JWTError:
+        return None
 
 origins = [o.strip() for o in settings.CORS_ALLOW_ORIGINS.split(",") if o.strip()]
 
@@ -106,14 +131,18 @@ async def on_startup():
 @app.get("/api/profile", tags=["legacy"])
 async def legacy_profile(
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user_id),
+    user_id: str | None = Depends(get_optional_user_id),
 ):
     """
     Compatibility alias for older frontend builds.
     Expected by: /api/proxy/api/profile
     """
-    u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-    w = await db.get(Wallet, user_id)
+    if user_id:
+        u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        w = await db.get(Wallet, user_id)
+    else:
+        u = None
+        w = None
 
     return {
         "ok": True,
@@ -131,16 +160,18 @@ async def legacy_profile(
 
 
 @app.get("/api/city-entry", tags=["legacy"])
-async def legacy_city_entry(user_id: str = Depends(get_current_user_id)):
+async def legacy_city_entry(
+    user_id: str | None = Depends(get_optional_user_id),
+):
     """
-    Stop-gap endpoint to prevent 404s for older clients.
+    Stop-gap endpoint to prevent 404/401 for older clients.
     Expected by: /api/proxy/api/city-entry
     """
-    return {"ok": True, "user_id": str(user_id)}
+    return {"ok": True, "user_id": str(user_id) if user_id else None}
 
 
 @app.post("/api/npc/spawn", tags=["legacy"])
-async def legacy_npc_spawn(user_id: str = Depends(get_current_user_id)):
+async def legacy_npc_spawn(user_id: str | None = Depends(get_optional_user_id)):
     """
     Старий фронт викликає POST /api/npc/spawn (через /api/proxy).
     Тут мінімальний "заглушковий" респонс, щоб не валити гру 404-кою.
@@ -151,6 +182,6 @@ async def legacy_npc_spawn(user_id: str = Depends(get_current_user_id)):
     """
     return {
         "ok": True,
-        "user_id": str(user_id),
+        "user_id": str(user_id) if user_id else None,
         "npcs": [],  # можна наповнити пізніше, зараз головне прибрати 404
     }
