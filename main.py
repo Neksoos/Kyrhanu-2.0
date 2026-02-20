@@ -136,4 +136,3 @@ async def healthz():
     except Exception:
         db_ok = False
     return {"ok": True, "dbOk": db_ok}
-```0
