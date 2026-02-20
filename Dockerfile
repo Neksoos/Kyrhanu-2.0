@@ -17,9 +17,11 @@ COPY . .
 ENV PYTHONPATH=/app
 
 # Which ASGI app to run.
+# - app.main:app (2.0 API with JWT + runs/shop/inventory)  ✅ default
 # - main:app (legacy game API with Telegram cookie sessions)
-# - app.main:app (2.0 API with JWT + runs/shop/inventory)
-ENV APP_MODULE=main:app
+#
+# Railway / Docker can override this env var when needed.
+ENV APP_MODULE=app.main:app
 
 # Запуск: слухаємо PORT від Railway (fallback 8080 локально)
 CMD ["sh", "-c", "uvicorn ${APP_MODULE} --host 0.0.0.0 --port ${PORT:-8080}"]
