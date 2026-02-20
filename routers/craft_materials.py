@@ -4,7 +4,8 @@ from typing import Optional, List, Dict, Any
 from fastapi import APIRouter
 from db import get_pool
 
-router = APIRouter(prefix="/craft_materials", tags=["craft_materials"])
+router = APIRouter(prefix="/api/craft_materials", tags=["craft_materials"])
+router_public = APIRouter(prefix="/craft_materials", tags=["craft_materials"])
 
 
 def _category(code: str) -> str:
@@ -16,6 +17,7 @@ def _category(code: str) -> str:
 
 
 @router.get("/brief")
+@router_public.get("/brief")
 async def craft_materials_brief(q: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Короткий довідник матеріалів для UI (code -> name).
@@ -58,6 +60,7 @@ async def craft_materials_brief(q: Optional[str] = None) -> List[Dict[str, Any]]
 
 
 @router.get("/shop")
+@router_public.get("/shop")
 async def craft_materials_shop(q: Optional[str] = None) -> Dict[str, Any]:
     """
     Реміснича лавка (тільки shop-матеріали алхімії):
@@ -117,6 +120,7 @@ async def craft_materials_shop(q: Optional[str] = None) -> Dict[str, Any]:
 
 
 @router.get("/list")
+@router_public.get("/list")
 async def craft_materials_list(q: Optional[str] = None) -> Dict[str, Any]:
     """
     BACKWARD-COMPAT:

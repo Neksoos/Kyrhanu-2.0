@@ -35,10 +35,12 @@ from fastapi import APIRouter
 from db import get_pool
 
 
-router = APIRouter(prefix="/items", tags=["items"])
+router = APIRouter(prefix="/api/items", tags=["items"])
+router_public = APIRouter(prefix="/items", tags=["items"])
 
 
 @router.get("/brief")
+@router_public.get("/brief")
 async def items_brief(q: Optional[str] = None) -> Dict[str, List[Dict[str, str]]]:
     """Return a list of all items and craft materials with their codes and names.
 
