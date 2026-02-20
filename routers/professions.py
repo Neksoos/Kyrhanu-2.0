@@ -1,6 +1,7 @@
+# routers/professions.py
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Dict
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
@@ -11,22 +12,47 @@ from routers.auth import get_tg_id
 # ───────────────────────────────────────
 # РОУТЕРИ
 # ───────────────────────────────────────
-# Основний (як ти і хочеш)
 router = APIRouter(prefix="/api/professions", tags=["professions"])
-
-# Дзеркальний (якщо десь префікси/проксі з’їхали)
 router_public = APIRouter(prefix="/professions", tags=["professions"])
 
 
 # ───────────────────────────────────────
-# ЦІНИ
+# ЛІМІТИ
 # ───────────────────────────────────────
-SECOND_PROFESSION_COST_KLEY = 200   # друга професія
-CHANGE_PROFESSION_COST_KLEY = 350   # скинути професію / змінити
+# ✅ Дозволяємо мати 4 професії (коваль/ювелір/ткач/алхімік)
+MAX_TOTAL_PROFESSIONS = 4
 
+# gathering залишаємо як було (якщо вони тобі потрібні окремо)
 MAX_GATHERING_PROFESSIONS = 2
-MAX_CRAFT_PROFESSIONS = 2
-MAX_TOTAL_PROFESSIONS = 2
+
+# ✅ craft піднімаємо до 4, щоб вмістити 4 ремісничі професії
+MAX_CRAFT_PROFESSIONS = 4
+
+
+# ───────────────────────────────────────
+# ЦІНИ (клейноди)
+# ───────────────────────────────────────
+# Слот професії: 1 — free, далі дорожчає "набагато"
+# 2га: 200, 3тя: 600, 4та: 1800 (x3)
+PROFESSION_SLOT_COSTS_KLEY: Dict[int, int] = {
+    2: 200,
+    3: 600,
+    4: 1800,
+}
+
+# Скинути/змінити професію
+CHANGE_PROFESSION_COST_KLEY = 350
+
+
+def _cost_to_add_profession(current_count: int) -> int:
+    """
+    current_count = скільки професій уже є у гравця.
+    Повертає вартість додати наступну професію.
+    """
+    next_slot = current_count + 1
+    if next_slot <= 1:
+        return 0
+    return PROFESSION_SLOT_COSTS_KLEY.get(next_slot, 0)
 
 
 # ───────────────────────────────────────
@@ -188,7 +214,7 @@ async def _remove_profession_with_cost(
 
 
 # ───────────────────────────────────────
-# CORE handlers (щоб не дублювати логіку)
+# CORE handlers
 # ───────────────────────────────────────
 async def _handle_list_professions():
     pool = await get_pool()
@@ -230,18 +256,26 @@ async def _handle_me(tg_id: int) -> ProfessionsMeResponse:
 
     gathering_count = sum(1 for p in profs if p.profession.kind == "gathering")
     craft_count = sum(1 for p in profs if p.profession.kind == "craft")
+    total_count = len(profs)
 
     limits = {
         "gathering": {"max": MAX_GATHERING_PROFESSIONS, "current": gathering_count},
         "craft": {"max": MAX_CRAFT_PROFESSIONS, "current": craft_count},
+        "total": {"max": MAX_TOTAL_PROFESSIONS, "current": total_count},
     }
+
+    next_cost = _cost_to_add_profession(total_count) if total_count < MAX_TOTAL_PROFESSIONS else None
 
     return ProfessionsMeResponse(
         ok=True,
         player_level=player_level,
         professions=profs,
         limits=limits,
-        costs={"second": SECOND_PROFESSION_COST_KLEY, "change": CHANGE_PROFESSION_COST_KLEY},
+        costs={
+            "add_slots_kley": PROFESSION_SLOT_COSTS_KLEY,
+            "next_add_kley": next_cost,
+            "change_kley": CHANGE_PROFESSION_COST_KLEY,
+        },
     )
 
 
@@ -272,25 +306,27 @@ async def _handle_choose(tg_id: int, payload: ChooseProfessionRequest) -> Generi
     if prof["kind"] == "gathering" and gathering_count >= MAX_GATHERING_PROFESSIONS:
         raise HTTPException(status_code=400, detail="Досягнуто максимум збиральних професій.")
     if prof["kind"] == "craft" and craft_count >= MAX_CRAFT_PROFESSIONS:
-        raise HTTPException(status_code=400, detail="Досягнуто максимум крафтових професій.")
+        raise HTTPException(status_code=400, detail="Досягнуто максимум ремісничих професій.")
 
-    if total_count == 1 and player_kley < SECOND_PROFESSION_COST_KLEY:
+    # ✅ вартість залежить від того, яку за рахунком професію додаємо
+    add_cost = _cost_to_add_profession(total_count)
+    if add_cost > 0 and player_kley < add_cost:
         raise HTTPException(
             status_code=400,
-            detail=f"Недостатньо клейнодів (потрібно {SECOND_PROFESSION_COST_KLEY}).",
+            detail=f"Недостатньо клейнодів (потрібно {add_cost}).",
         )
 
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            if total_count == 1:
+            if add_cost > 0:
                 updated = await conn.execute(
                     """
                     UPDATE players
                     SET kleynody = kleynody - $1
                     WHERE id = $2 AND kleynody >= $1
                     """,
-                    SECOND_PROFESSION_COST_KLEY,
+                    add_cost,
                     player_id,
                 )
                 if updated.endswith("0"):
@@ -350,7 +386,6 @@ async def abandon_profession(payload: ChooseProfessionRequest, tg_id: int = Depe
 
 @router.post("/change", response_model=GenericResponse)
 async def change_profession(payload: ChooseProfessionRequest, tg_id: int = Depends(get_tg_id)):
-    # "change" = те саме що abandon (як у тебе було)
     return await _handle_abandon(tg_id, payload)
 
 
