@@ -12,12 +12,11 @@ from db import get_pool
 from services.regeneration import apply_full_regen
 from services.progress import xp_required_for, _ensure_player_progress_schema
 from services.char_stats import get_full_stats_for_player
-
 from services.energy import BASE_CAP as BASE_ENERGY_MAX
 from services.achievements.metrics import inc_metric, try_mark_event_once
 
 from models.player import PlayerDTO
-from routers.auth import get_player  # initData -> PlayerDTO
+from routers.auth import get_player
 
 router = APIRouter(prefix="/api", tags=["city"])
 
@@ -78,11 +77,6 @@ async def city_entry(player: PlayerDTO = Depends(get_player)) -> CityEntryRespon
     pool = await get_pool()
     await _ensure_player_progress_schema()
 
-    async with pool.acquire() as conn:
-        exists = await conn.fetchval("SELECT 1 FROM players WHERE tg_id=$1", tg_id)
-    if not exists:
-        raise HTTPException(status_code=409, detail={"code": "NEED_REGISTER"})
-
     regen = None
     try:
         regen = await apply_full_regen(tg_id)
@@ -102,7 +96,6 @@ async def city_entry(player: PlayerDTO = Depends(get_player)) -> CityEntryRespon
     daily_login: Optional[DailyLoginDTO] = None
     try:
         from services.daily_login import process_daily_login  # type: ignore
-
         xp_gain, coins_gain, got_kleynod = await process_daily_login(tg_id)
         if xp_gain > 0 or coins_gain > 0 or got_kleynod:
             daily_login = DailyLoginDTO(
@@ -138,6 +131,7 @@ async def city_entry(player: PlayerDTO = Depends(get_player)) -> CityEntryRespon
         )
 
     if not row:
+        # ✅ щоб фронт редіректив на /register
         raise HTTPException(status_code=409, detail={"code": "NEED_REGISTER"})
 
     level = int(row["level"])
@@ -172,7 +166,6 @@ async def city_entry(player: PlayerDTO = Depends(get_player)) -> CityEntryRespon
     if regen is not None:
         regen_hp = max(0, int(regen.hp_delta))
         regen_mp = max(0, int(regen.mp_delta))
-
         energy_delta = getattr(regen, "energy_delta", 0)
         try:
             regen_energy = max(0, int(energy_delta))
@@ -180,11 +173,7 @@ async def city_entry(player: PlayerDTO = Depends(get_player)) -> CityEntryRespon
             regen_energy = 0
 
         if regen_hp > 0 or regen_mp > 0 or regen_energy > 0:
-            entry = EntryDTO(
-                regen_hp=regen_hp,
-                regen_mp=regen_mp,
-                regen_energy=regen_energy,
-            )
+            entry = EntryDTO(regen_hp=regen_hp, regen_mp=regen_mp, regen_energy=regen_energy)
 
     player_dto = PlayerOutDTO(
         tg_id=int(row["tg_id"]),
