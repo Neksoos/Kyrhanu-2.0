@@ -13,14 +13,11 @@ from services.regeneration import apply_full_regen
 from services.progress import xp_required_for, _ensure_player_progress_schema
 from services.char_stats import get_full_stats_for_player
 
-# ✅ FIX: у services.energy немає BASE_ENERGY_MAX, є BASE_CAP
 from services.energy import BASE_CAP as BASE_ENERGY_MAX
-
-# ✅ achievements metrics
 from services.achievements.metrics import inc_metric, try_mark_event_once
 
 from models.player import PlayerDTO
-from routers.auth import get_player  # ✅ initData -> PlayerDTO
+from routers.auth import get_player  # initData -> PlayerDTO
 
 router = APIRouter(prefix="/api", tags=["city"])
 
@@ -71,7 +68,7 @@ class CityEntryResponse(BaseModel):
 
 
 def _today_utc_key() -> str:
-    return datetime.now(timezone.utc).date().isoformat()  # YYYY-MM-DD
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 @router.get("/city-entry", response_model=CityEntryResponse)
@@ -84,7 +81,7 @@ async def city_entry(player: PlayerDTO = Depends(get_player)) -> CityEntryRespon
     async with pool.acquire() as conn:
         exists = await conn.fetchval("SELECT 1 FROM players WHERE tg_id=$1", tg_id)
     if not exists:
-        raise HTTPException(403, "PLAYER_NOT_REGISTERED")
+        raise HTTPException(status_code=409, detail={"code": "NEED_REGISTER"})
 
     regen = None
     try:
@@ -141,7 +138,7 @@ async def city_entry(player: PlayerDTO = Depends(get_player)) -> CityEntryRespon
         )
 
     if not row:
-        raise HTTPException(403, "PLAYER_NOT_REGISTERED")
+        raise HTTPException(status_code=409, detail={"code": "NEED_REGISTER"})
 
     level = int(row["level"])
     xp = int(row["xp"])
